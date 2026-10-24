@@ -33,6 +33,8 @@ private let okBody = #"""
         #expect(r.value(forHTTPHeaderField: "Authorization") == "Bearer sk-test")
         let json = try #require(try JSONSerialization.jsonObject(with: r.httpBody ?? Data()) as? [String: Any])
         #expect(json["model"] as? String == "gpt-6-luna")
+        // 推論を使わない設定にして、待ち時間を短くする（実測で 3.5 秒 → 1.5 秒）。
+        #expect((json["reasoning"] as? [String: Any])?["effort"] as? String == "none")
         let format = try #require((json["text"] as? [String: Any])?["format"] as? [String: Any])
         #expect(format["type"] as? String == "json_schema")
         #expect(format["strict"] as? Bool == true)

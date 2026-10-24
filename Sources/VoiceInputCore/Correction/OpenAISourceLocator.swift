@@ -36,6 +36,8 @@ public struct OpenAISourceLocator: SourceLocator {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let body: [String: Any] = [
             "model": model,
+            // 推論を使わない。使うと 1 回 3 秒を超え、待ち時間に収まらない（2026-10-24 の実測）。
+            "reasoning": ["effort": "none"],
             "input": [
                 ["role": "system", "content": Self.instructions],
                 ["role": "user", "content": "sentence: \(sentence)\nword: \(word)"],
