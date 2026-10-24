@@ -3,6 +3,7 @@ import Foundation
 import VoiceInputCore
 
 /// CGEventTap でキーを監視し、録音キーの down と up、その他のキーの押下を通知する。
+/// クリックとスクロールも「その他のキー」として通知する（Option+クリックなどで録音が始まらないように）。
 ///
 /// tap は専用スレッドの run loop で動かす。メインスレッドが止まっても（キーチェーンの確認ダイアログや
 /// マイクの起動など）、tap の応答が遅れてシステムに無効にされることはない。
@@ -34,6 +35,10 @@ final class GlobalKeyMonitor: @unchecked Sendable {
         let mask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
             | (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.leftMouseDown.rawValue)
+            | (1 << CGEventType.rightMouseDown.rawValue)
+            | (1 << CGEventType.otherMouseDown.rawValue)
+            | (1 << CGEventType.scrollWheel.rawValue)
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -90,6 +95,10 @@ final class GlobalKeyMonitor: @unchecked Sendable {
             }
             if type == .keyDown { onEvent(.otherKeyDown) }
             return true
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel:
+            // そのまま通す。録音キーとの同時押しとしてだけ扱う。
+            onEvent(.otherKeyDown)
+            return true
         default:
             return true
         }
@@ -107,6 +116,10 @@ private func keyTapCallback(
     let monitor = Unmanaged<GlobalKeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
     // 文字を入れるために自分で送った Cmd+V。録音キーとの同時押しや、録音を捨てる操作と見なさない。
     if event.getIntegerValueField(.eventSourceUserData) == PasteboardInserter.syntheticEventTag {
+        return Unmanaged.passUnretained(event)
+    }
+    // 指を離した後の慣性スクロールは操作ではない。押し続けの録音を捨てないよう無視する。
+    if type == .scrollWheel, event.getIntegerValueField(.scrollWheelEventMomentumPhase) != 0 {
         return Unmanaged.passUnretained(event)
     }
     let keyCode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
