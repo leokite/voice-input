@@ -404,14 +404,24 @@ struct SessionControllerTests {
         #expect(h.states.isEmpty)
     }
 
+    @Test func handleReportsWhetherTheActionWasAccepted() async {
+        let h = Harness()
+        #expect(!h.controller.handle(.stop))
+        #expect(!h.controller.handle(.confirm(.toggle)))
+        #expect(h.controller.handle(.beginBuffering))
+        #expect(!h.controller.handle(.beginBuffering))
+        #expect(h.controller.handle(.cancel))
+        #expect(!h.controller.handle(.cancel))
+    }
+
     @Test func actionsDuringProcessingAreIgnored() async {
         let h = Harness()
         h.confirm()
         await h.stop()
         await h.session.waitFor("finalize")
-        h.controller.handle(.beginBuffering)
-        h.controller.handle(.confirm(.toggle))
-        h.controller.handle(.stop)
+        #expect(!h.controller.handle(.beginBuffering))
+        #expect(!h.controller.handle(.confirm(.toggle)))
+        #expect(!h.controller.handle(.stop))
         h.session.push(.fin)
         await h.controller.waitUntilIdle()
         #expect(h.factory.sessions.count == 1)

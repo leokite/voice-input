@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import AVFoundation
+import Carbon.HIToolbox
 import VoiceInputCore
 
 /// 保存処理、SessionController、KeyStateMachine、GlobalKeyMonitor、OverlayPanel をつなぐ。
@@ -33,16 +34,10 @@ import VoiceInputCore
     /// 録音中などに設定が変わった。落ち着いたらキーの設定を作り直す。
     private var keyRebuildPending = false
     private var overlayMessageTask: Task<Void, Never>?
-    /// API キーがないまま押されたキー。確定したら警告を出す。
-    private var pressWithoutKey = false
-    /// SessionController に .beginBuffering を渡し、まだ確定も取り消しもしていない。
-    private var buffering = false
-    /// 録音中のモード。録音中でなければ nil。
-    private var activeMode: RecordingMode?
+    /// 押下と録音の途中経過。録音を始めてよいかを決める。
+    private var gate = RecordingGate()
     /// tap のスレッドから読む録音キー。
     private let watchedKeys: LockedValue<Set<KeyID>>
-    /// 押した時点で読んだ API キー。確定時にファクトリーが使う。
-    private let apiKey = LockedValue<String?>(nil)
 
     init() {
         let settings = settingsStore.load()
@@ -56,7 +51,7 @@ import VoiceInputCore
 
         session = SessionController(
             audio: AudioCapture(),
-            sessions: CachedKeySessionFactory(apiKey: apiKey),
+            sessions: KeychainSessionFactory(),
             inserter: PasteboardInserter(),
             frontmost: FrontmostApp(),
             settings: { [unowned self] in self.settings },
@@ -179,7 +174,7 @@ import VoiceInputCore
 
     /// キーが落ち着いていれば（録音中でも、押下の途中でもなければ）、新しい設定でキーの状態機械と監視キーを作り直す。
     private func rebuildKeysIfQuiet() {
-        guard keyRebuildPending, !capturingKey, activeMode == nil, !buffering, !pressWithoutKey else { return }
+        guard keyRebuildPending, !capturingKey, gate.isQuiet else { return }
         if case .recording = sessionState { return }
         keyRebuildPending = false
         thresholdTask?.cancel()
@@ -191,11 +186,9 @@ import VoiceInputCore
     /// 録音と押下の途中を、種類を問わず終わらせて状態を戻す。
     private func abortKeyInteraction() {
         thresholdTask?.cancel()
-        if activeMode != nil { session.handle(.stop) }
-        if buffering { session.handle(.cancel) }
-        buffering = false
-        activeMode = nil
-        pressWithoutKey = false
+        if gate.activeMode != nil { session.handle(.stop) }
+        if gate.buffering { session.handle(.cancel) }
+        gate.reset()
         keyMachine.reset()
     }
 
@@ -209,45 +202,47 @@ import VoiceInputCore
     /// 押し続けの録音が止まらなくなるのを防ぐため、押し続けの録音と確定前の押下を終わらせて状態を戻す。
     /// トグルの録音は続ける。KeyStateMachine はキーを失っても次の押下で止められる状態のままなので触らない。
     private func keyTapWasDisabled() {
-        if activeMode == .toggle { return }
+        if gate.activeMode == .toggle { return }
         thresholdTask?.cancel()
-        if activeMode == .hold { session.handle(.stop) }
-        if buffering { session.handle(.cancel) }
-        buffering = false
-        activeMode = nil
-        pressWithoutKey = false
+        if gate.activeMode == .hold { session.handle(.stop) }
+        if gate.buffering { session.handle(.cancel) }
+        gate.reset()
         keyMachine.reset()
     }
 
+    /// 押した時点ではキーチェーンを読まない（確認のダイアログが普段の入力中に出ないよう、保存の有無だけを見る）。
+    /// キーそのものは確定したときに KeychainSessionFactory が読む。
     private func dispatch(_ actions: [KeyAction]) {
         for action in actions {
-            switch action {
-            case .beginBuffering:
-                scheduleThresholdTick()
-                let key = KeychainStore.loadAPIKey()
-                apiKey.value = key
-                pressWithoutKey = key?.isEmpty ?? true
-                if pressWithoutKey { continue }
-                buffering = true
-            case .confirm where pressWithoutKey:
-                pressWithoutKey = false
-                keyMachine.reset()
-                showOverlayMessage(.error("API キーが設定されていません"))
-                continue
-            case .cancel where pressWithoutKey:
-                pressWithoutKey = false
-                continue
-            case .confirm(let mode):
-                buffering = false
-                activeMode = mode
-            case .cancel:
-                buffering = false
-            case .stop, .abort:
-                activeMode = nil
+            if action == .beginBuffering { scheduleThresholdTick() }
+            var secureInput = false
+            if case .confirm = action { secureInput = IsSecureEventInputEnabled() }
+            let decision = gate.decide(action, hasAPIKey: hasAPIKey, secureInput: secureInput)
+            if let forward = decision.forward, !session.handle(forward),
+               let rejection = gate.sessionRejected(forward) {
+                reject(rejection)
+                break
             }
-            session.handle(action)
+            if let rejection = decision.rejection {
+                reject(rejection)
+                break
+            }
         }
         rebuildKeysIfQuiet()
+    }
+
+    /// 録音を始めない。キーの状態を戻し、理由を短く知らせる。
+    private func reject(_ rejection: RecordingGate.Rejection) {
+        thresholdTask?.cancel()
+        keyMachine.reset()
+        switch rejection {
+        case .missingAPIKey:
+            showOverlayMessage(.error("API キーが設定されていません"))
+        case .secureInput:
+            showOverlayMessage(.notice("パスワード入力中は使えません"))
+        case .busy:
+            showOverlayMessage(.notice("処理中です"))
+        }
     }
 
     private func scheduleThresholdTick() {
@@ -264,8 +259,7 @@ import VoiceInputCore
 
     private func sessionStateChanged(_ state: SessionState) {
         sessionState = state
-        if case .recording = state {} else { activeMode = nil }
-        if case .error = state { buffering = false }
+        gate.sessionStateChanged(state)
         overlayMessageTask?.cancel()
         overlay.show(state)
         if case .error = state { keyMachine.reset() }
@@ -298,12 +292,10 @@ import VoiceInputCore
     }
 }
 
-/// 押した時点でキーチェーンから読んだ API キーを使う。録音のたびに読むので、後から入れたキーも再起動なしで使える。
-private struct CachedKeySessionFactory: TranscriptionSessionFactory {
-    let apiKey: LockedValue<String?>
-
+/// 録音だと確定したときに、キーチェーンから API キーを読む。録音のたびに読むので、後から入れたキーも再起動なしで使える。
+private struct KeychainSessionFactory: TranscriptionSessionFactory {
     func makeSession() -> TranscriptionSession {
-        SonioxSessionFactory(apiKey: apiKey.value ?? "").makeSession()
+        SonioxSessionFactory(apiKey: KeychainStore.loadAPIKey() ?? "").makeSession()
     }
 }
 

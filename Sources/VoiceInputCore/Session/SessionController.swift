@@ -72,7 +72,10 @@ public enum SessionState: Equatable, Sendable {
         self.sleep = sleep
     }
 
-    public func handle(_ action: KeyAction) {
+    /// 受け付けなかった（今の状態では意味がない）アクションなら false。
+    /// 前の録音を処理している間の `.beginBuffering` は false になる（同時に 2 つは録音しない）。
+    @discardableResult
+    public func handle(_ action: KeyAction) -> Bool {
         switch action {
         case .beginBuffering: beginBuffering()
         case .confirm: confirm()
@@ -89,8 +92,8 @@ public enum SessionState: Equatable, Sendable {
 
     // MARK: - Actions
 
-    private func beginBuffering() {
-        guard recording == nil else { return }
+    private func beginBuffering() -> Bool {
+        guard recording == nil else { return false }
         displayTask?.cancel()
         displayTask = nil
         setState(.idle)
@@ -104,7 +107,7 @@ public enum SessionState: Equatable, Sendable {
             r.micOn = false
             r.micFailed = true
             chunks.finish()
-            return
+            return true
         }
         r.pump = Task { [weak self] in
             for await chunk in r.chunkStream {
@@ -112,36 +115,39 @@ public enum SessionState: Equatable, Sendable {
             }
             r.outbox.finish()
         }
+        return true
     }
 
-    private func cancel() {
-        guard let r = recording, r.phase == .buffering else { return }
+    private func cancel() -> Bool {
+        guard let r = recording, r.phase == .buffering else { return false }
         stopMic(r)
         recording = nil
+        return true
     }
 
     /// 押し続けの録音を捨てる。マイクを止め、ためた音声は送らずにセッションを閉じる。何も入れず、履歴にも残さない。
-    private func abort() {
-        guard let r = recording else { return }
+    private func abort() -> Bool {
+        guard let r = recording else { return false }
         switch r.phase {
         case .buffering:
-            cancel()
+            return cancel()
         case .recording:
             r.aborted = true
             stopMic(r)
             r.resumeFinWaiter(with: CancellationError())
             setState(.idle)
+            return true
         case .finishing:
-            return
+            return false
         }
     }
 
-    private func confirm() {
-        guard let r = recording, r.phase == .buffering else { return }
+    private func confirm() -> Bool {
+        guard let r = recording, r.phase == .buffering else { return false }
         if r.micFailed {
             recording = nil
             show(.error("マイクを使用できません"))
-            return
+            return true
         }
         let settings = settings()
         r.phase = .recording
@@ -166,10 +172,12 @@ public enum SessionState: Equatable, Sendable {
                 }
             }
         }
+        return true
     }
 
-    private func stop(auto: Bool) {
-        guard let r = recording, r.phase == .recording else { return }
+    @discardableResult
+    private func stop(auto: Bool) -> Bool {
+        guard let r = recording, r.phase == .recording else { return false }
         r.phase = .finishing
         r.stoppedAt = now()
         Task { [weak self] in
@@ -179,6 +187,7 @@ public enum SessionState: Equatable, Sendable {
             if self.recording === r { self.setState(.processing) }
         }
         if auto { onAutoStop?() }
+        return true
     }
 
     // MARK: - Audio
