@@ -14,6 +14,23 @@ import Testing
         #expect(KeyNames.displayName(for: KeyID(keyCode: 63)) == "Fn")
     }
 
+    @Test func onlyModifiersAndF13ToF19CanBeRecordKeys() {
+        let modifiers: [UInt16] = [61, 58, 54, 55, 62, 59, 60, 56, 63]
+        let f13ToF19: [UInt16] = [105, 107, 113, 106, 64, 79, 80]
+        for code in modifiers + f13ToF19 {
+            #expect(RecordKeys.isAllowed(KeyID(keyCode: code)), "keyCode \(code)")
+        }
+        // a、Space、Return、Esc、F1、F12、矢印、Caps Lock は使えない。
+        for code: UInt16 in [0, 49, 36, 53, 122, 111, 123, 57] {
+            #expect(!RecordKeys.isAllowed(KeyID(keyCode: code)), "keyCode \(code)")
+        }
+    }
+
+    @Test func functionKeyNames() {
+        #expect(KeyNames.displayName(for: KeyID(keyCode: 105)) == "F13")
+        #expect(KeyNames.displayName(for: KeyID(keyCode: 80)) == "F19")
+    }
+
     @Test func unknownKeyName() {
         #expect(KeyNames.displayName(for: KeyID(keyCode: 96)) == "キー 96")
     }

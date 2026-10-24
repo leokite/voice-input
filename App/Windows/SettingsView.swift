@@ -150,18 +150,20 @@ struct SettingsView: View {
     }
 }
 
-/// 「押して設定」。次に押されたキーの keyCode を記録する。修飾キーにも対応。Esc で取り消す。
+/// 「押して設定」。次に押されたキーの keyCode を記録する。使えるのは修飾キーと F13〜F19 だけ。Esc で取り消す。
 private struct KeyRecorderRow: View {
     let title: String
     @Binding var key: KeyID
     let coordinator: AppCoordinator
     @State private var recording = false
+    @State private var rejected = false
     @State private var monitor: Any?
 
     var body: some View {
         LabeledContent(title) {
             HStack {
-                Text(recording ? "キーを押してください…" : KeyNames.displayName(for: key))
+                Text(recording ? (rejected ? "このキーは使えません" : "キーを押してください…")
+                               : KeyNames.displayName(for: key))
                     .foregroundStyle(recording ? Color.orange : Color.primary)
                 Button(recording ? "取り消す" : "押して設定") { recording ? stop() : start() }
             }
@@ -182,12 +184,21 @@ private struct KeyRecorderRow: View {
     }
 
     private func start() {
+        rejected = false
         recording = true
         coordinator.beginKeyCapture()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             if event.type == .keyDown {
-                if event.keyCode != 53 { key = KeyID(keyCode: event.keyCode) }
-                stop()
+                let pressed = KeyID(keyCode: event.keyCode)
+                if event.keyCode == 53 {
+                    stop()
+                } else if RecordKeys.isAllowed(pressed) {
+                    key = pressed
+                    stop()
+                } else {
+                    // 普通のキーを録音キーにすると、どのアプリでも打てなくなる。受け付けずに待ち続ける。
+                    rejected = true
+                }
                 return nil
             }
             // 修飾キーは押した瞬間（フラグが立った）だけ拾う。
