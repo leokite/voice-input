@@ -28,49 +28,78 @@ public struct PasteboardSnapshot {
 /// Inserts text by pasting: snapshot clipboard, write text, post Cmd+V, restore.
 ///
 /// Restore timing: with `restoreDelay <= 0` the clipboard is restored synchronously
-/// (deterministic for tests); otherwise it is scheduled with `DispatchQueue.main.asyncAfter`
+/// (deterministic for tests); otherwise it is scheduled via the injectable `schedule` (default `DispatchQueue.main.asyncAfter`)
 /// so `insert` returns right after posting Cmd+V. The restore is skipped when
 /// `changeCount` shows something else wrote to the pasteboard after our write.
+/// Overlapping inserts share the pending original; only the latest scheduled restore fires.
 public final class PasteboardInserter: TextInserter, @unchecked Sendable {
+    public typealias Scheduler = @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void
+
     private let pasteboard: NSPasteboard
     private let isSecureInput: () -> Bool
     private let postPaste: () -> Void
     private let restoreDelay: TimeInterval
+    private let schedule: Scheduler
+
+    private let lock = NSLock()
+    /// Restore waiting to fire: the user's real clipboard and the changeCount of our write.
+    private var pending: (original: PasteboardSnapshot, ourChangeCount: Int)?
+    private var generation = 0
 
     public init(
         pasteboard: NSPasteboard = .general,
         isSecureInput: @escaping () -> Bool = { IsSecureEventInputEnabled() },
         postPaste: @escaping () -> Void = PasteboardInserter.sendCommandV,
-        restoreDelay: TimeInterval = 0.25
+        restoreDelay: TimeInterval = 0.25,
+        schedule: @escaping Scheduler = { delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
     ) {
         self.pasteboard = pasteboard
         self.isSecureInput = isSecureInput
         self.postPaste = postPaste
         self.restoreDelay = restoreDelay
+        self.schedule = schedule
     }
 
     public func insert(_ text: String) throws {
         if isSecureInput() { throw InsertionError.secureInput }
-        let snapshot = PasteboardSnapshot.capture(pasteboard)
+
+        // Overlapping inserts: if our own earlier write is still on the pasteboard,
+        // keep the original from before it instead of snapshotting our own text.
+        let original: PasteboardSnapshot = lock.withLock {
+            if let p = pending, pasteboard.changeCount == p.ourChangeCount { return p.original }
+            return PasteboardSnapshot.capture(pasteboard)
+        }
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
-            snapshot.restore(to: pasteboard)
+            lock.withLock { pending = nil; generation += 1 }
+            original.restore(to: pasteboard)
             throw InsertionError.failed
         }
         let ourChangeCount = pasteboard.changeCount
+        let token: Int = lock.withLock {
+            generation += 1
+            pending = restoreDelay <= 0 ? nil : (original, ourChangeCount)
+            return generation
+        }
         postPaste()
 
-        let pb = pasteboard
-        let restore = {
-            guard pb.changeCount == ourChangeCount else { return }
-            snapshot.restore(to: pb)
-        }
         if restoreDelay <= 0 {
-            restore()
+            if pasteboard.changeCount == ourChangeCount { original.restore(to: pasteboard) }
         } else {
-            nonisolated(unsafe) let restoreBlock = restore
-            DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay) { restoreBlock() }
+            schedule(restoreDelay) { [self] in fireRestore(token: token) }
         }
+    }
+
+    private func fireRestore(token: Int) {
+        let p: (original: PasteboardSnapshot, ourChangeCount: Int)? = lock.withLock {
+            guard token == generation, let p = pending else { return nil }
+            pending = nil
+            return p
+        }
+        guard let p, pasteboard.changeCount == p.ourChangeCount else { return }
+        p.original.restore(to: pasteboard)
     }
 
     /// Posts Cmd+V (virtual key 0x09) to the HID event tap. Not exercised in tests.

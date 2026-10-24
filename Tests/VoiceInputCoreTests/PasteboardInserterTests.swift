@@ -66,4 +66,42 @@ import Testing
         try inserter.insert("hello")
         #expect(pb.string(forType: .string) == "new")
     }
+
+    @Test func overlappingInsertsRestoreTheTrueOriginal() throws {
+        let pb = makePasteboard()
+        defer { pb.releaseGlobally() }
+        pb.clearContents()
+        pb.setString("original", forType: .string)
+        let queue = ScheduledWork()
+        let inserter = PasteboardInserter(
+            pasteboard: pb, isSecureInput: { false }, postPaste: {},
+            restoreDelay: 0.25, schedule: { _, work in queue.add(work) })
+        try inserter.insert("A")
+        try inserter.insert("B")
+        #expect(pb.string(forType: .string) == "B")
+        queue.runAll()
+        #expect(pb.string(forType: .string) == "original")
+    }
+
+    @Test func asyncRestoreSkippedWhenClipboardChangedMeanwhile() throws {
+        let pb = makePasteboard()
+        defer { pb.releaseGlobally() }
+        pb.clearContents()
+        pb.setString("original", forType: .string)
+        let queue = ScheduledWork()
+        let inserter = PasteboardInserter(
+            pasteboard: pb, isSecureInput: { false }, postPaste: {},
+            restoreDelay: 0.25, schedule: { _, work in queue.add(work) })
+        try inserter.insert("A")
+        pb.clearContents()
+        pb.setString("new", forType: .string)
+        queue.runAll()
+        #expect(pb.string(forType: .string) == "new")
+    }
+}
+
+private final class ScheduledWork: @unchecked Sendable {
+    private var items: [@Sendable () -> Void] = []
+    func add(_ w: @escaping @Sendable () -> Void) { items.append(w) }
+    func runAll() { let w = items; items = []; w.forEach { $0() } }
 }
