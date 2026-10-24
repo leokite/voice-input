@@ -81,15 +81,22 @@ import Testing
 
 @MainActor @Suite(.timeLimit(.minutes(1)))
 struct SessionControllerTests {
+    @Test func beginBufferingDoesNotStartMic() async {
+        let h = Harness()
+        h.controller.handle(.beginBuffering)
+        #expect(!h.audio.started)
+        #expect(h.states.isEmpty)
+        h.controller.handle(.confirm(.toggle))
+        #expect(h.audio.started)
+    }
+
     @Test func cancelNeverOpensSession() async {
         let h = Harness()
         h.controller.handle(.beginBuffering)
-        #expect(h.audio.started)
-        h.audio.emit(Data("A".utf8), rms: 0.5)
         h.controller.handle(.cancel)
         await h.controller.waitUntilIdle()
         #expect(h.factory.sessions.isEmpty)
-        #expect(h.audio.stopped)
+        #expect(!h.audio.started)
         #expect(h.states.isEmpty)
     }
 
@@ -97,9 +104,9 @@ struct SessionControllerTests {
         let h = Harness()
         h.factory.startDelay = .seconds(1)
         h.controller.handle(.beginBuffering)
+        h.controller.handle(.confirm(.toggle))
         h.audio.emit(Data("A".utf8), rms: 0.5)
         h.audio.emit(Data("B".utf8), rms: 0.5)
-        h.controller.handle(.confirm(.toggle))
         await h.clock.waitForSleeper(.seconds(1))
         await h.stop()
         #expect(h.audio.stopped)
@@ -191,7 +198,9 @@ struct SessionControllerTests {
         let h = Harness()
         h.audio.startError = InsertionError.failed
         h.controller.handle(.beginBuffering)
+        #expect(h.audio.startCalls == 0)
         h.controller.handle(.confirm(.toggle))
+        #expect(h.audio.startCalls == 1)
         await h.controller.waitUntilIdle()
         #expect(h.factory.sessions.isEmpty)
         #expect(h.states == [.error("マイクを使用できません")])
@@ -207,9 +216,10 @@ struct SessionControllerTests {
         h.audio.startError = InsertionError.failed
         h.controller.handle(.beginBuffering)
         #expect(h.states.isEmpty)
-        // 普通の Option 操作（取り消し）では何も出さない。
+        // 普通の Option 操作（取り消し）ではマイクに触れず、何も出さない。
         h.controller.handle(.cancel)
         await h.controller.waitUntilIdle()
+        #expect(h.audio.startCalls == 0)
         #expect(h.states.isEmpty)
         #expect(h.errors.isEmpty)
         #expect(h.factory.sessions.isEmpty)
@@ -405,8 +415,8 @@ struct SessionControllerTests {
         let h = Harness()
         h.factory.startDelay = .seconds(1)
         h.controller.handle(.beginBuffering)
-        h.audio.emit(Data("A".utf8), rms: 0.5)
         h.controller.handle(.confirm(.hold))
+        h.audio.emit(Data("A".utf8), rms: 0.5)
         await h.clock.waitForSleeper(.seconds(1))
         h.controller.handle(.abort)
         h.clock.advance(by: .seconds(1))
@@ -422,7 +432,7 @@ struct SessionControllerTests {
         h.controller.handle(.beginBuffering)
         h.controller.handle(.abort)
         await h.controller.waitUntilIdle()
-        #expect(h.audio.stopped)
+        #expect(!h.audio.started)
         #expect(h.factory.sessions.isEmpty)
         #expect(h.states.isEmpty)
     }

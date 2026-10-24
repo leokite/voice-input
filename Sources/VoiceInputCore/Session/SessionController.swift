@@ -124,30 +124,14 @@ public enum SessionError: Equatable, Sendable {
         displayTask?.cancel()
         displayTask = nil
         setState(.idle)
-        let r = Recording(startedAt: now())
-        let chunks = r.chunks
-        recording = r
-        do {
-            try audio.start(onChunk: { data, rms in chunks.yield(Chunk(data: data, rms: rms)) })
-        } catch {
-            // 押しただけ（取り消しになるかもしれない）では知らせない。録音だと確定したときにエラーを出す。
-            r.micOn = false
-            r.micFailed = true
-            chunks.finish()
-            return true
-        }
-        r.pump = Task { [weak self] in
-            for await chunk in r.chunkStream {
-                self?.received(chunk, in: r)
-            }
-            r.outbox.finish()
-        }
+        // 押しただけ（取り消しになるかもしれない）ではマイクに触れない。押した時刻だけを覚える（録音の長さに使う）。
+        recording = Recording(startedAt: now())
         return true
     }
 
+    /// 確定前の取り消し。マイクはまだ始めていないので、覚えた押下を捨てるだけ。
     private func cancel() -> Bool {
         guard let r = recording, r.phase == .buffering else { return false }
-        stopMic(r)
         recording = nil
         return true
     }
@@ -171,10 +155,20 @@ public enum SessionError: Equatable, Sendable {
 
     private func confirm() -> Bool {
         guard let r = recording, r.phase == .buffering else { return false }
-        if r.micFailed {
+        let chunks = r.chunks
+        do {
+            try audio.start(onChunk: { data, rms in chunks.yield(Chunk(data: data, rms: rms)) })
+        } catch {
             recording = nil
             showError(.micUnavailable)
             return true
+        }
+        r.micOn = true
+        r.pump = Task { [weak self] in
+            for await chunk in r.chunkStream {
+                self?.received(chunk, in: r)
+            }
+            r.outbox.finish()
         }
         let settings = settings()
         r.phase = .recording
@@ -233,7 +227,7 @@ public enum SessionError: Equatable, Sendable {
     private func stopMic(_ r: Recording) {
         guard r.micOn else { return }
         r.micOn = false
-        if r.phase != .buffering { r.phase = .finishing }
+        r.phase = .finishing
         audio.stop()
         r.chunks.finish()
     }

@@ -15,8 +15,8 @@ final class AudioCapture: AudioSource {
         case .authorized:
             break
         default:
-            // 未確認でも、押した時点では許可のダイアログを出さない（普通の Option 操作で出てしまう）。
-            // 許可を求めるのは、権限の画面か、録音だと確定したとき（AppCoordinator）。
+            // 未確認でも、ここでは許可のダイアログを出さない。
+            // 許可を求めるのは、権限の画面か、このエラーを受けた AppCoordinator。
             throw CaptureError.permissionDenied
         }
 

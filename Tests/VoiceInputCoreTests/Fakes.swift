@@ -64,10 +64,12 @@ extension Duration {
 final class FakeAudio: AudioSource {
     private(set) var started = false
     private(set) var stopped = false
+    private(set) var startCalls = 0
     private var onChunk: (@Sendable (Data, Float) -> Void)?
     var startError: Error?
 
     func start(onChunk: @escaping @Sendable (Data, Float) -> Void) throws {
+        startCalls += 1
         if let startError { throw startError }
         started = true
         stopped = false

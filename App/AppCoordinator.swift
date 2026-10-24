@@ -201,16 +201,21 @@ import VoiceInputCore
         dispatch(keyMachine.handle(event, at: t))
     }
 
-    /// メニューの「録音の開始と停止」。切り替えモードのキーを短く押したのと同じ道を通す。
+    /// メニューの「録音の開始と停止」。切り替えの録音だけを始めたり止めたりする。
+    /// 始めるときは切り替えモードのキーを短く押したのと同じ道を通す（そのキーの短押しでも止められるように）。
+    /// 押し続けの録音には触れない（メニューを開くクリックで、もう捨てられている）。
     func toggleRecordingFromMenu() {
-        if gate.activeMode == .hold {
+        switch gate.activeMode {
+        case .toggle:
             keyMachine.reset()
             dispatch([.stop])
-            return
+        case nil where gate.isQuiet:
+            let t = ProcessInfo.processInfo.systemUptime
+            handle(.down(keyMachine.toggleKey), at: t)
+            handle(.up(keyMachine.toggleKey), at: t)
+        default:
+            break
         }
-        let t = ProcessInfo.processInfo.systemUptime
-        handle(.down(keyMachine.toggleKey), at: t)
-        handle(.up(keyMachine.toggleKey), at: t)
     }
 
     /// tap が無効にされていた間のイベント（録音キーの up かもしれない）は失われている。
