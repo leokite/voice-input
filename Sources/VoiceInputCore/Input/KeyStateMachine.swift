@@ -29,6 +29,8 @@ public enum KeyAction: Equatable, Sendable {
     case confirm(RecordingMode)
     case stop
     case cancel
+    /// 押し続けの録音中に別のキーが押された。録音を捨てる（何も入れず、履歴にも残さない）。
+    case abort
 }
 
 /// Pure state machine turning raw key events into recording actions.
@@ -132,6 +134,9 @@ public struct KeyStateMachine: Sendable {
         case .toggleRecording(true, _):
             state = .toggleRecording(pressedAgain: true, chorded: true)
             return []
+        case .holdRecording:
+            state = .idle
+            return [.abort]
         default:
             return []
         }

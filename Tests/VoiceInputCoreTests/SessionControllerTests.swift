@@ -343,6 +343,55 @@ struct SessionControllerTests {
         #expect(h.history.first?.inserted == false)
     }
 
+    @Test func abortDuringHoldRecordingDiscardsEverything() async {
+        let h = Harness()
+        h.glossary.addCorrection(from: "ぎっとはぶ", to: "GitHub")
+        h.controller.handle(.beginBuffering)
+        h.controller.handle(.confirm(.hold))
+        h.audio.emit(Data("A".utf8), rms: 0.5)
+        await h.session.waitFor("audio:A")
+        h.session.push(.final("ぎっとはぶです"))
+        h.controller.handle(.abort)
+        #expect(h.audio.stopped)
+        #expect(h.states.last == .idle)
+        await h.controller.waitUntilIdle()
+        #expect(h.session.log == ["audio:A", "finish"])
+        #expect(h.inserter.inserted.isEmpty)
+        #expect(h.history.isEmpty)
+        #expect(h.termsUsed.isEmpty)
+        #expect(!h.states.contains(.processing))
+        #expect(h.states.last == .idle)
+        // 次の録音はすぐ始められる。
+        h.confirm()
+        #expect(h.factory.sessions.count == 2)
+    }
+
+    @Test func abortWhileWaitingForConnectionClosesSessionOnce() async {
+        let h = Harness()
+        h.factory.startDelay = .seconds(1)
+        h.controller.handle(.beginBuffering)
+        h.audio.emit(Data("A".utf8), rms: 0.5)
+        h.controller.handle(.confirm(.hold))
+        await h.clock.waitForSleeper(.seconds(1))
+        h.controller.handle(.abort)
+        h.clock.advance(by: .seconds(1))
+        await h.controller.waitUntilIdle()
+        #expect(h.session.log == ["finish"])
+        #expect(h.history.isEmpty)
+        #expect(!h.states.contains(.processing))
+        #expect(h.states.last == .idle)
+    }
+
+    @Test func abortWhileBufferingActsLikeCancel() async {
+        let h = Harness()
+        h.controller.handle(.beginBuffering)
+        h.controller.handle(.abort)
+        await h.controller.waitUntilIdle()
+        #expect(h.audio.stopped)
+        #expect(h.factory.sessions.isEmpty)
+        #expect(h.states.isEmpty)
+    }
+
     @Test func actionsDuringProcessingAreIgnored() async {
         let h = Harness()
         h.confirm()

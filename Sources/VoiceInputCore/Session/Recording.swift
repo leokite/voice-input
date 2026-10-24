@@ -41,6 +41,8 @@ struct Chunk: Sendable {
     /// finish() を呼び始めた後は、受信の終わりを切断として扱わない。
     var finishing = false
     var failure: Error?
+    /// 押し続けの録音中に別のキーが押され、録音を捨てた。
+    var aborted = false
 
     var processedText = ""
     var usedTerms: Set<String> = []

@@ -78,6 +78,7 @@ public enum SessionState: Equatable, Sendable {
         case .confirm: confirm()
         case .stop: stop(auto: false)
         case .cancel: cancel()
+        case .abort: abort()
         }
     }
 
@@ -114,6 +115,22 @@ public enum SessionState: Equatable, Sendable {
         guard let r = recording, r.phase == .buffering else { return }
         stopMic(r)
         recording = nil
+    }
+
+    /// 押し続けの録音を捨てる。マイクを止め、ためた音声は送らずにセッションを閉じる。何も入れず、履歴にも残さない。
+    private func abort() {
+        guard let r = recording else { return }
+        switch r.phase {
+        case .buffering:
+            cancel()
+        case .recording:
+            r.aborted = true
+            stopMic(r)
+            r.resumeFinWaiter(with: CancellationError())
+            setState(.idle)
+        case .finishing:
+            return
+        }
     }
 
     private func confirm() {
@@ -195,12 +212,16 @@ public enum SessionState: Equatable, Sendable {
                 await self?.receive(session.responses, for: r)
             }
             for await data in r.outboxStream {
-                if r.failure != nil { break }
+                if r.failure != nil || r.aborted { break }
                 do { try await session.sendAudio(data) } catch { throw SendFailure(underlying: error) }
             }
             if let failure = r.failure { throw failure }
-            do { try await session.finalize() } catch { throw SendFailure(underlying: error) }
-            try await waitForFin(r)
+            if !r.aborted {
+                do { try await session.finalize() } catch { throw SendFailure(underlying: error) }
+                try await waitForFin(r)
+            }
+        } catch where r.aborted {
+            // 捨てた録音のエラーは知らせない。
         } catch let failure as SendFailure {
             // 送信の失敗はソケットが閉じた結果にすぎないことが多い。サーバーの本当のエラー
             // （受信側に届く）を優先するため、受信の終わりを最大 1 秒待つ。
@@ -294,6 +315,7 @@ public enum SessionState: Equatable, Sendable {
     }
 
     private func deliver(_ text: String, in r: Recording) {
+        guard !r.aborted else { return }
         guard r.blocked == nil else {
             r.allInserted = false
             return
@@ -316,6 +338,11 @@ public enum SessionState: Equatable, Sendable {
 
     private func complete(_ r: Recording) {
         r.ticker?.cancel()
+        if r.aborted {
+            recording = nil
+            setState(.idle)
+            return
+        }
         if r.realtime {
             if let rest = r.chunker.flush() { emitRealtime(rest, in: r) }
         } else {

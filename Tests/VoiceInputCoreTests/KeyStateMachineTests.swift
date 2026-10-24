@@ -64,12 +64,15 @@ import Testing
         #expect(m.handle(.up(.rightOption), at: 6.1) == [.stop])
     }
 
-    @Test func otherKeysIgnoredWhileHoldRecording() {
+    @Test func otherKeyAbortsHoldRecording() {
         var m = sameKey()
         _ = m.handle(.down(.rightOption), at: 0.0)
         _ = m.tick(at: 0.3)
-        #expect(m.handle(.otherKeyDown, at: 0.5) == [])
-        #expect(m.handle(.up(.rightOption), at: 1.0) == [.stop])
+        #expect(m.handle(.otherKeyDown, at: 0.5) == [.abort])
+        // 取り消した後の離す操作と、さらに押したキーでは何も起きない。
+        #expect(m.handle(.otherKeyDown, at: 0.6) == [])
+        #expect(m.handle(.up(.rightOption), at: 1.0) == [])
+        #expect(m.handle(.down(.rightOption), at: 2.0) == [.beginBuffering])
     }
 
     @Test func autorepeatDownIsIgnored() {

@@ -242,7 +242,7 @@ import VoiceInputCore
                 activeMode = mode
             case .cancel:
                 buffering = false
-            case .stop:
+            case .stop, .abort:
                 activeMode = nil
             }
             session.handle(action)
