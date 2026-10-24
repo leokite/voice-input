@@ -1,0 +1,33 @@
+name: VoiceInput
+options:
+  bundleIdPrefix: dev.ykazama
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  VoiceInputCore:
+    path: .
+targets:
+  VoiceInput:
+    type: application
+    platform: macOS
+    sources: [App]
+    dependencies:
+      - package: VoiceInputCore
+    configFiles:
+      Debug: Local.xcconfig
+      Release: Local.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ykazama.VoiceInput
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        ARCHS: arm64
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: App/VoiceInput.entitlements
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+    info:
+      path: App/Info.plist
+      properties:
+        LSUIElement: true
+        NSMicrophoneUsageDescription: 音声入力のためにマイクを使用します。

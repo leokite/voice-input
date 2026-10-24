@@ -1,0 +1,6 @@
+Local.xcconfig
+VoiceInput.xcodeproj/
+build/
+.build/
+.DS_Store
+App/Info.plist
