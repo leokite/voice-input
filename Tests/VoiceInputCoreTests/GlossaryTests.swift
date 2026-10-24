@@ -51,4 +51,16 @@ struct GlossaryTests {
         let data = try JSONEncoder().encode(g)
         #expect(try JSONDecoder().decode(Glossary.self, from: data) == g)
     }
+
+    @Test func renameTermRejectsDuplicatesAndEmpty() {
+        var g = Glossary.empty
+        g.addTerm("A")
+        g.addTerm("B")
+        #expect(g.renameTerm(from: "A", to: "B") == false)
+        #expect(g.renameTerm(from: "A", to: "") == false)
+        #expect(g.renameTerm(from: "Z", to: "C") == false)
+        #expect(g.terms.map(\.text) == ["A", "B"])
+        #expect(g.renameTerm(from: "A", to: "C") == true)
+        #expect(g.terms.map(\.text) == ["C", "B"])
+    }
 }

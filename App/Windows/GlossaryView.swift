@@ -28,9 +28,9 @@ struct GlossaryView: View {
                     TermRow(term: term,
                             rename: { newText in
                                 var g = coordinator.glossary
-                                guard let i = g.terms.firstIndex(where: { $0.text == term.text }) else { return }
-                                g.terms[i].text = newText
+                                guard g.renameTerm(from: term.text, to: newText) else { return false }
                                 coordinator.updateGlossary(g)
+                                return true
                             },
                             delete: {
                                 var g = coordinator.glossary
@@ -116,12 +116,12 @@ struct GlossaryView: View {
 /// 用語 1 件。入力中は手元の下書きを直し、Return か入力欄を離れたときに確定する。
 private struct TermRow<LastUsed: View>: View {
     let term: Term
-    let rename: (String) -> Void
+    let rename: (String) -> Bool
     let delete: () -> Void
     let lastUsed: (Date?) -> LastUsed
     @State private var draft: String
 
-    init(term: Term, rename: @escaping (String) -> Void, delete: @escaping () -> Void,
+    init(term: Term, rename: @escaping (String) -> Bool, delete: @escaping () -> Void,
          lastUsed: @escaping (Date?) -> LastUsed) {
         self.term = term
         self.rename = rename
@@ -142,6 +142,6 @@ private struct TermRow<LastUsed: View>: View {
 
     private func commit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { draft = term.text } else if text != term.text { rename(text) }
+        if text.isEmpty { draft = term.text } else if text != term.text, !rename(text) { draft = term.text }
     }
 }

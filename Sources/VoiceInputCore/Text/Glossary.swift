@@ -40,6 +40,15 @@ public struct Glossary: Codable, Equatable, Sendable {
         terms.append(Term(text: text))
     }
 
+    /// 用語の文字を直す。空、見つからない、すでに同じ用語がある場合は何もせず false。
+    @discardableResult
+    public mutating func renameTerm(from old: String, to new: String) -> Bool {
+        guard !new.isEmpty, let i = terms.firstIndex(where: { $0.text == old }) else { return false }
+        if new != old, terms.contains(where: { $0.text == new }) { return false }
+        terms[i].text = new
+        return true
+    }
+
     public mutating func addCorrection(from: String, to: String) {
         if let index = replacements.firstIndex(where: { $0.from == from }) {
             replacements[index].to = to
