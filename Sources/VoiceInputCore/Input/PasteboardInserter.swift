@@ -2,7 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 
 /// Full copy of a pasteboard: every item, every type's raw data.
-public struct PasteboardSnapshot {
+public struct PasteboardSnapshot: Sendable {
     private let items: [[(type: NSPasteboard.PasteboardType, data: Data)]]
 
     public static func capture(_ pb: NSPasteboard) -> PasteboardSnapshot {
@@ -107,6 +107,14 @@ public final class PasteboardInserter: TextInserter, @unchecked Sendable {
         }
         guard let p, pasteboard.changeCount == p.ourChangeCount else { return }
         p.original.restore(to: pasteboard)
+    }
+
+    /// 文字を入れた後の、元に戻す処理が残っていれば、その元の中身。ほかの誰かが書き込んでいれば nil。
+    public func pendingOriginal() -> PasteboardSnapshot? {
+        lock.withLock {
+            guard let p = pending, pasteboard.changeCount == p.ourChangeCount else { return nil }
+            return p.original
+        }
     }
 
     /// `eventSourceUserData` of the events we post, so our own key tap can skip them ("VOIC").

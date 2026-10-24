@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import VoiceInputCore
 
-/// CGEventTap でキーを監視し、録音キーの down と up、その他のキーの押下を通知する。
+/// CGEventTap でキーを監視し、録音キーの down と up、その他のキーの押下、用語集に登録するキーの押下を通知する。
 /// クリックとスクロールも「その他のキー」として通知する（Option+クリックなどで録音が始まらないように）。
 ///
 /// tap は専用スレッドの run loop で動かす。メインスレッドが止まっても（キーチェーンの確認ダイアログや
@@ -10,20 +10,30 @@ import VoiceInputCore
 /// コールバックはすべてその専用スレッドで呼ばれる。呼ばれた側がメインスレッドへ移す。
 final class GlobalKeyMonitor: @unchecked Sendable {
     private let watched: @Sendable () -> Set<KeyID>
+    private let shortcut: @Sendable () -> Shortcut?
     private let onEvent: @Sendable (KeyEvent) -> Void
+    private let onShortcut: @Sendable () -> Void
     private let onDisabled: @Sendable () -> Void
     private let lock = NSLock()
     private var tap: CFMachPort?
     private var runLoop: CFRunLoop?
+    /// 握りつぶしたショートカットの keyDown の keyCode。対応する keyUp も握りつぶす。
+    private var swallowedShortcutKey: UInt16?
 
     /// - Parameters:
     ///   - watched: 監視するキー。tap のスレッドから呼ぶので、スレッドセーフであること。
+    ///   - shortcut: 用語集に登録するキー。nil なら監視しない。tap のスレッドから呼ぶ。
+    ///   - onShortcut: そのキーが押されたとき（オートリピートでは呼ばない）。
     ///   - onDisabled: tap がシステムに一時的に無効にされたとき（その間のイベントは失われる）。
     init(watched: @escaping @Sendable () -> Set<KeyID>,
+         shortcut: @escaping @Sendable () -> Shortcut? = { nil },
          onEvent: @escaping @Sendable (KeyEvent) -> Void,
+         onShortcut: @escaping @Sendable () -> Void = {},
          onDisabled: @escaping @Sendable () -> Void = {}) {
         self.watched = watched
+        self.shortcut = shortcut
         self.onEvent = onEvent
+        self.onShortcut = onShortcut
         self.onDisabled = onDisabled
     }
 
@@ -75,7 +85,7 @@ final class GlobalKeyMonitor: @unchecked Sendable {
     }
 
     /// イベントを握りつぶすなら false を返す。tap のスレッドで呼ばれる。
-    fileprivate func handle(type: CGEventType, keyCode: UInt16, flags: UInt64) -> Bool {
+    fileprivate func handle(type: CGEventType, keyCode: UInt16, flags: UInt64, autorepeat: Bool) -> Bool {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             if let tap = lock.withLock({ tap }) { CGEvent.tapEnable(tap: tap, enable: true) }
@@ -87,6 +97,17 @@ final class GlobalKeyMonitor: @unchecked Sendable {
                 onEvent(event)
             }
             return true
+        case .keyDown where shortcut()?.matches(keyCode: keyCode, cgFlags: flags) == true:
+            lock.withLock { swallowedShortcutKey = keyCode }
+            if !autorepeat {
+                // 録音キー（右 ⌥ など）を押したままの組み合わせなら、録音を始めないよう同時押しとして知らせる。
+                onEvent(.otherKeyDown)
+                onShortcut()
+            }
+            return false
+        case .keyUp where lock.withLock({ swallowedShortcutKey == keyCode }):
+            lock.withLock { swallowedShortcutKey = nil }
+            return false
         case .keyDown, .keyUp:
             let key = KeyID(keyCode: keyCode)
             if watched().contains(key), !ModifierKeys.isModifier(key) {
@@ -123,6 +144,7 @@ private func keyTapCallback(
         return Unmanaged.passUnretained(event)
     }
     let keyCode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
-    let pass = monitor.handle(type: type, keyCode: keyCode, flags: event.flags.rawValue)
+    let autorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+    let pass = monitor.handle(type: type, keyCode: keyCode, flags: event.flags.rawValue, autorepeat: autorepeat)
     return pass ? Unmanaged.passUnretained(event) : nil
 }

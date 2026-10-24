@@ -7,6 +7,8 @@ struct SettingsView: View {
     @ObservedObject var coordinator: AppCoordinator
     @State private var apiKeyInput = ""
     @State private var apiKeyError: String?
+    @State private var openAIKeyInput = ""
+    @State private var openAIKeyError: String?
     @State private var languageText = ""
     @State private var newFiller = ""
     @State private var launchError: String?
@@ -95,6 +97,34 @@ struct SettingsView: View {
                 } else {
                     Text("用語はすべて音声認識のヒントに送られています。").foregroundStyle(.secondary)
                 }
+                ShortcutRecorderRow(title: "直した単語を登録するキー", shortcut: binding(\.glossaryShortcut),
+                                    coordinator: coordinator)
+                Toggle("外部AI（OpenAI）で置き換え元を探す", isOn: binding(\.useCloudLocator))
+                if coordinator.settings.useCloudLocator {
+                    Text("単語だけを選んだときなどに、直前の音声入力の文と直した語を OpenAI（\(coordinator.settings.cloudModel)）に送ります。")
+                        .foregroundStyle(.secondary)
+                    SecureField("OpenAI API キー", text: $openAIKeyInput)
+                    HStack {
+                        Button("保存") { saveOpenAIKey() }
+                            .disabled(openAIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("削除", role: .destructive) {
+                            coordinator.deleteOpenAIKey()
+                            openAIKeyInput = ""
+                        }
+                        .disabled(!coordinator.hasOpenAIKey)
+                        if coordinator.hasOpenAIKey { Text("保存済み").foregroundStyle(.secondary) }
+                    }
+                    if let openAIKeyError { Text(openAIKeyError).foregroundStyle(.red) }
+                    if !coordinator.hasOpenAIKey {
+                        Text("キーがないので、今は読みの近さだけで探します。").foregroundStyle(.orange)
+                    }
+                }
+                switch coordinator.judgeAvailability {
+                case .available:
+                    Text("端末内AIで置き換えを判断します").foregroundStyle(.secondary)
+                case .unavailable(let reason):
+                    Text(reason).foregroundStyle(.orange)
+                }
             }
 
             Section("起動") {
@@ -136,6 +166,17 @@ struct SettingsView: View {
         s.fillers.append(text)
         coordinator.updateSettings(s)
         newFiller = ""
+    }
+
+    private func saveOpenAIKey() {
+        let key = openAIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try coordinator.saveOpenAIKey(key)
+            openAIKeyError = nil
+            openAIKeyInput = ""
+        } catch {
+            openAIKeyError = "キーチェーンに保存できません: \(error.localizedDescription)"
+        }
     }
 
     private func saveKey() {
@@ -215,5 +256,78 @@ private struct KeyRecorderRow: View {
         monitor = nil
         recording = false
         coordinator.endKeyCapture()
+    }
+}
+
+/// 用語集に登録するキーの「押して設定」。修飾キーと普通のキー 1 つの組み合わせを記録する。Esc で取り消す。
+private struct ShortcutRecorderRow: View {
+    let title: String
+    @Binding var shortcut: Shortcut
+    let coordinator: AppCoordinator
+    @State private var recording = false
+    @State private var rejected = false
+    @State private var monitor: Any?
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack {
+                Text(recording ? (rejected ? "このキーは使えません" : "キーを押してください…") : shortcut.displayName)
+                    .foregroundStyle(recording ? Color.orange : Color.primary)
+                Button(recording ? "取り消す" : "押して設定") { recording ? stop() : start() }
+            }
+        }
+        .onDisappear { if recording { stop() } }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            if recording { stop() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
+            if recording { stop() }
+        }
+        .task(id: recording) {
+            guard recording else { return }
+            try? await Task.sleep(for: .seconds(10))
+            if !Task.isCancelled, recording { stop() }
+        }
+    }
+
+    private func start() {
+        rejected = false
+        recording = true
+        coordinator.beginKeyCapture()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            if event.keyCode == 53 {
+                stop()
+                return nil
+            }
+            let candidate = Shortcut(
+                modifiers: ShortcutModifiers(cgFlags: UInt64(event.modifierFlags.rawValue)),
+                keyCode: event.keyCode,
+                keyLabel: Self.label(for: event))
+            let recordKeys = [coordinator.settings.toggleKey, coordinator.settings.holdKey]
+            if Shortcut.isAllowed(candidate, recordKeys: recordKeys) {
+                shortcut = candidate
+                stop()
+            } else {
+                // 修飾キーなしの組み合わせは普段の入力を邪魔するので受け付けず、待ち続ける。
+                rejected = true
+            }
+            return nil
+        }
+    }
+
+    private func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        recording = false
+        coordinator.endKeyCapture()
+    }
+
+    /// 表示用のキーの名前。英数字なら大文字、それ以外（F キーなど）は KeyNames の名前。
+    private static func label(for event: NSEvent) -> String {
+        if let chars = event.charactersIgnoringModifiers?.uppercased(), chars.count == 1,
+           let scalar = chars.unicodeScalars.first, scalar.isASCII, scalar.properties.isAlphabetic || ("0"..."9").contains(chars) {
+            return chars
+        }
+        return KeyNames.displayName(for: KeyID(keyCode: event.keyCode))
     }
 }
