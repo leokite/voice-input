@@ -26,18 +26,27 @@ import VoiceInputCore
     private var overlayMessageTask: Task<Void, Never>?
     /// API キーがないまま押されたキー。確定したら警告を出す。
     private var pressWithoutKey = false
+    /// SessionController に .beginBuffering を渡し、まだ確定も取り消しもしていない。
+    private var buffering = false
+    /// 録音中のモード。録音中でなければ nil。
+    private var activeMode: RecordingMode?
+    /// tap のスレッドから読む録音キー。
+    private let watchedKeys: LockedValue<Set<KeyID>>
+    /// 押した時点で読んだ API キー。確定時にファクトリーが使う。
+    private let apiKey = LockedValue<String?>(nil)
 
     init() {
         let settings = settingsStore.load()
         self.settings = settings
         glossary = glossaryStore.load()
         history = historyStore.load()
+        watchedKeys = LockedValue([settings.toggleKey, settings.holdKey])
         keyMachine = KeyStateMachine(toggleKey: settings.toggleKey, holdKey: settings.holdKey,
                                      holdThreshold: settings.holdThreshold)
 
         session = SessionController(
             audio: AudioCapture(),
-            sessions: KeychainSessionFactory(),
+            sessions: CachedKeySessionFactory(apiKey: apiKey),
             inserter: PasteboardInserter(),
             frontmost: FrontmostApp(),
             settings: { [unowned self] in self.settings },
@@ -48,9 +57,20 @@ import VoiceInputCore
         session.onStateChange = { [unowned self] state in self.sessionStateChanged(state) }
         session.onAutoStop = { [unowned self] in self.keyMachine.reset() }
 
+        // コールバックは tap の専用スレッドで呼ばれる。時刻はその場で取り、処理はメインへ順番どおりに移す。
         keyMonitor = GlobalKeyMonitor(
-            watched: { [unowned self] in [self.settings.toggleKey, self.settings.holdKey] },
-            onEvent: { [unowned self] event in self.handle(event) }
+            watched: { [watchedKeys] in watchedKeys.value },
+            onEvent: { [weak self] event in
+                let t = ProcessInfo.processInfo.systemUptime
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.handle(event, at: t) }
+                }
+            },
+            onDisabled: { [weak self] in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.keyTapWasDisabled() }
+                }
+            }
         )
     }
 
@@ -82,14 +102,22 @@ import VoiceInputCore
 
     // MARK: - Keys
 
-    /// tap のコールバック内で呼ばれる。判定だけをここで行い、キーチェーンの読み出しやマイクの起動は
-    /// コールバックを返した後に回して、キー入力全体を止めないようにする。
-    private func handle(_ event: KeyEvent) {
-        let actions = keyMachine.handle(event, at: ProcessInfo.processInfo.systemUptime)
-        guard !actions.isEmpty else { return }
-        DispatchQueue.main.async { [self] in
-            MainActor.assumeIsolated { dispatch(actions) }
-        }
+    private func handle(_ event: KeyEvent, at t: TimeInterval) {
+        dispatch(keyMachine.handle(event, at: t))
+    }
+
+    /// tap が無効にされていた間のイベント（録音キーの up かもしれない）は失われている。
+    /// 押し続けの録音が止まらなくなるのを防ぐため、押し続けの録音と確定前の押下を終わらせて状態を戻す。
+    /// トグルの録音は続ける。KeyStateMachine はキーを失っても次の押下で止められる状態のままなので触らない。
+    private func keyTapWasDisabled() {
+        if activeMode == .toggle { return }
+        thresholdTask?.cancel()
+        if activeMode == .hold { session.handle(.stop) }
+        if buffering { session.handle(.cancel) }
+        buffering = false
+        activeMode = nil
+        pressWithoutKey = false
+        keyMachine.reset()
     }
 
     private func dispatch(_ actions: [KeyAction]) {
@@ -97,8 +125,11 @@ import VoiceInputCore
             switch action {
             case .beginBuffering:
                 scheduleThresholdTick()
-                pressWithoutKey = KeychainStore.loadAPIKey()?.isEmpty ?? true
+                let key = KeychainStore.loadAPIKey()
+                apiKey.value = key
+                pressWithoutKey = key?.isEmpty ?? true
                 if pressWithoutKey { continue }
+                buffering = true
             case .confirm where pressWithoutKey:
                 pressWithoutKey = false
                 keyMachine.reset()
@@ -107,8 +138,13 @@ import VoiceInputCore
             case .cancel where pressWithoutKey:
                 pressWithoutKey = false
                 continue
-            default:
-                break
+            case .confirm(let mode):
+                buffering = false
+                activeMode = mode
+            case .cancel:
+                buffering = false
+            case .stop:
+                activeMode = nil
             }
             session.handle(action)
         }
@@ -128,6 +164,8 @@ import VoiceInputCore
 
     private func sessionStateChanged(_ state: SessionState) {
         sessionState = state
+        if case .recording = state {} else { activeMode = nil }
+        if case .error = state { buffering = false }
         overlayMessageTask?.cancel()
         overlay.show(state)
         if case .error = state { keyMachine.reset() }
@@ -157,9 +195,26 @@ import VoiceInputCore
     }
 }
 
-/// 録音のたびにキーチェーンから API キーを読む。後から入れたキーも再起動なしで使える。
-private struct KeychainSessionFactory: TranscriptionSessionFactory {
+/// 押した時点でキーチェーンから読んだ API キーを使う。録音のたびに読むので、後から入れたキーも再起動なしで使える。
+private struct CachedKeySessionFactory: TranscriptionSessionFactory {
+    let apiKey: LockedValue<String?>
+
     func makeSession() -> TranscriptionSession {
-        SonioxSessionFactory(apiKey: KeychainStore.loadAPIKey() ?? "").makeSession()
+        SonioxSessionFactory(apiKey: apiKey.value ?? "").makeSession()
+    }
+}
+
+/// スレッドをまたいで読み書きする値。
+final class LockedValue<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+
+    init(_ value: Value) {
+        stored = value
+    }
+
+    var value: Value {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
     }
 }

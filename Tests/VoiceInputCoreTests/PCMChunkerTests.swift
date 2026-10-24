@@ -37,3 +37,20 @@ import Testing
         #expect(abs((c.append([16384, -16384]).first?.rms ?? 0) - 0.5) < 0.0001)
     }
 }
+
+@Suite struct PCMChunkerFlushTests {
+    @Test func flushReturnsPartialChunkOnce() {
+        var c = PCMChunker(samplesPerChunk: 4)
+        _ = c.append([1, 2, 3, 4, 16384, -16384])
+        let rest = c.flush()
+        #expect(rest?.data == Data([0, 0x40, 0, 0xC0]))
+        #expect(abs((rest?.rms ?? 0) - 0.5) < 0.0001)
+        #expect(c.flush() == nil)
+    }
+
+    @Test func flushOnEmptyIsNil() {
+        var c = PCMChunker(samplesPerChunk: 4)
+        _ = c.append([1, 2, 3, 4])
+        #expect(c.flush() == nil)
+    }
+}

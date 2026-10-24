@@ -24,6 +24,14 @@ public struct PCMChunker: Sendable {
         return out
     }
 
+    /// 決まった数に満たない残りを返して空にする。録音の終わりに呼ぶ。残りがなければ nil。
+    public mutating func flush() -> (data: Data, rms: Float)? {
+        guard !buffer.isEmpty else { return nil }
+        let rest = buffer
+        buffer.removeAll(keepingCapacity: true)
+        return (rest.withUnsafeBytes { Data($0) }, Self.rms(rest))
+    }
+
     /// Int16 の振幅を 32768 で割った値の二乗平均平方根。
     public static func rms(_ samples: [Int16]) -> Float {
         guard !samples.isEmpty else { return 0 }

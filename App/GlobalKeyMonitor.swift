@@ -1,19 +1,34 @@
 import CoreGraphics
+import Foundation
 import VoiceInputCore
 
 /// CGEventTap でキーを監視し、録音キーの down と up、その他のキーの押下を通知する。
-@MainActor final class GlobalKeyMonitor {
-    private let watched: () -> Set<KeyID>
-    private let onEvent: (KeyEvent) -> Void
+///
+/// tap は専用スレッドの run loop で動かす。メインスレッドが止まっても（キーチェーンの確認ダイアログや
+/// マイクの起動など）、tap の応答が遅れてシステムに無効にされることはない。
+/// コールバックはすべてその専用スレッドで呼ばれる。呼ばれた側がメインスレッドへ移す。
+final class GlobalKeyMonitor: @unchecked Sendable {
+    private let watched: @Sendable () -> Set<KeyID>
+    private let onEvent: @Sendable (KeyEvent) -> Void
+    private let onDisabled: @Sendable () -> Void
+    private let lock = NSLock()
     private var tap: CFMachPort?
 
-    init(watched: @escaping () -> Set<KeyID>, onEvent: @escaping (KeyEvent) -> Void) {
+    /// - Parameters:
+    ///   - watched: 監視するキー。tap のスレッドから呼ぶので、スレッドセーフであること。
+    ///   - onDisabled: tap がシステムに一時的に無効にされたとき（その間のイベントは失われる）。
+    init(watched: @escaping @Sendable () -> Set<KeyID>,
+         onEvent: @escaping @Sendable (KeyEvent) -> Void,
+         onDisabled: @escaping @Sendable () -> Void = {}) {
         self.watched = watched
         self.onEvent = onEvent
+        self.onDisabled = onDisabled
     }
 
     /// tap を作れなければ（アクセシビリティの許可がなければ）false。
     func start() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         if tap != nil { return true }
         let mask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
             | (1 << CGEventType.keyDown.rawValue)
@@ -27,17 +42,25 @@ import VoiceInputCore
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else { return false }
         self.tap = tap
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        let port = UncheckedPort(port: tap)
+        let thread = Thread {
+            let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port.port, 0)
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+            CGEvent.tapEnable(tap: port.port, enable: true)
+            CFRunLoopRun()
+        }
+        thread.name = "VoiceInput.GlobalKeyMonitor"
+        thread.qualityOfService = .userInteractive
+        thread.start()
         return true
     }
 
-    /// イベントを握りつぶすなら false を返す。
+    /// イベントを握りつぶすなら false を返す。tap のスレッドで呼ばれる。
     fileprivate func handle(type: CGEventType, keyCode: UInt16, flags: UInt64) -> Bool {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if let tap = lock.withLock({ tap }) { CGEvent.tapEnable(tap: tap, enable: true) }
+            onDisabled()
             return true
         case .flagsChanged:
             let key = KeyID(keyCode: keyCode)
@@ -59,16 +82,16 @@ import VoiceInputCore
     }
 }
 
-/// tap はメインの run loop に登録しているので、このコールバックはメインスレッドで呼ばれる。
+private struct UncheckedPort: @unchecked Sendable {
+    let port: CFMachPort
+}
+
 private func keyTapCallback(
     proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
     guard let refcon else { return Unmanaged.passUnretained(event) }
     let monitor = Unmanaged<GlobalKeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
     let keyCode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
-    let flags = event.flags.rawValue
-    let pass = MainActor.assumeIsolated {
-        monitor.handle(type: type, keyCode: keyCode, flags: flags)
-    }
+    let pass = monitor.handle(type: type, keyCode: keyCode, flags: event.flags.rawValue)
     return pass ? Unmanaged.passUnretained(event) : nil
 }

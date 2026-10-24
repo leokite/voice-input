@@ -8,6 +8,7 @@ final class AudioCapture: AudioSource {
     }
 
     private var engine: AVAudioEngine?
+    private var pipeline: ConversionPipeline?
 
     func start(onChunk: @escaping @Sendable (Data, Float) -> Void) throws {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -31,7 +32,8 @@ final class AudioCapture: AudioSource {
         else { throw CaptureError.formatUnavailable }
 
         let pipeline = ConversionPipeline(converter: converter, outputFormat: outputFormat, onChunk: onChunk)
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+        // 小さめのバッファにして、止めたときに取りこぼす末尾を短くする。
+        input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
             pipeline.process(buffer)
         }
         engine.prepare()
@@ -42,22 +44,28 @@ final class AudioCapture: AudioSource {
             throw error
         }
         self.engine = engine
+        self.pipeline = pipeline
     }
 
+    /// マイクを止め、変換器と PCMChunker に残った末尾の音声を onChunk で渡してから戻る。
     func stop() {
         guard let engine else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        pipeline?.finish()
         self.engine = nil
+        self.pipeline = nil
     }
 }
 
-/// オーディオスレッドだけから使う変換処理。
+/// オーディオスレッドの process と、止めるときの finish の両方から使うので、lock で守る。
 private final class ConversionPipeline: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
     private let onChunk: @Sendable (Data, Float) -> Void
+    private let lock = NSLock()
     private var chunker = PCMChunker()
+    private var finished = false
 
     init(converter: AVAudioConverter, outputFormat: AVAudioFormat,
          onChunk: @escaping @Sendable (Data, Float) -> Void) {
@@ -67,23 +75,48 @@ private final class ConversionPipeline: @unchecked Sendable {
     }
 
     func process(_ buffer: AVAudioPCMBuffer) {
-        let ratio = outputFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 16
-        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
-        var supplied = false
-        var error: NSError?
-        let status = converter.convert(to: output, error: &error) { _, inputStatus in
-            if supplied {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            inputStatus.pointee = .haveData
-            return buffer
+        lock.withLock {
+            guard !finished else { return }
+            let ratio = outputFormat.sampleRate / buffer.format.sampleRate
+            let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
+            var supplied = false
+            deliver(convert(capacity: capacity) { inputStatus in
+                if supplied {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                supplied = true
+                inputStatus.pointee = .haveData
+                return buffer
+            })
         }
-        guard status != .error, let samples = output.int16ChannelData, output.frameLength > 0 else { return }
-        let frames = Array(UnsafeBufferPointer(start: samples[0], count: Int(output.frameLength)))
-        for chunk in chunker.append(frames) {
+    }
+
+    /// 変換器の中に残ったサンプルを吐き出させ、PCMChunker の端数も渡す。
+    func finish() {
+        lock.withLock {
+            guard !finished else { return }
+            finished = true
+            deliver(convert(capacity: 1024) { inputStatus in
+                inputStatus.pointee = .endOfStream
+                return nil
+            })
+            if let rest = chunker.flush() { onChunk(rest.data, rest.rms) }
+        }
+    }
+
+    private func convert(capacity: AVAudioFrameCount,
+                         input: @escaping (UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer?) -> [Int16] {
+        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return [] }
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error) { _, inputStatus in input(inputStatus) }
+        guard status != .error, let samples = output.int16ChannelData, output.frameLength > 0 else { return [] }
+        return Array(UnsafeBufferPointer(start: samples[0], count: Int(output.frameLength)))
+    }
+
+    private func deliver(_ samples: [Int16]) {
+        guard !samples.isEmpty else { return }
+        for chunk in chunker.append(samples) {
             onChunk(chunk.data, chunk.rms)
         }
     }
