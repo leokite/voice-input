@@ -85,7 +85,8 @@ import Testing
     @Test func mixedJapaneseEnglish() throws {
         let e = entry("この PR を merge して")
         let c = try #require(CorrectionMatcher.match(selection: "この PR を marge して", history: [e], now: now))
-        #expect(c.pairs == [CorrectionPair(from: "e", to: "a")])
+        // 英字の並びは 1 つの語として比べる。
+        #expect(c.pairs == [CorrectionPair(from: "merge", to: "marge")])
     }
 
     // 最終レビューの指摘（C1）: 語の境目をまたぐ断片を置き換え元にしない。
@@ -113,5 +114,30 @@ import Testing
         let c = try #require(CorrectionMatcher.match(
             selection: "、Dockerコンテナを再起動", history: [entry("どうかコンテナを再起動してから")], now: now))
         #expect(c.pairs == [CorrectionPair(from: "どうか", to: "Docker")])
+    }
+
+    // 語のかたまりで比べ、1 つの直しを割らない（GPT-6、Luna → gpt-6-luna）。
+    @Test func wholeLatinWordEditIsOnePair() throws {
+        let e = entry("OpenAIのAPIで使うモデルは、GPT-6、Lunaだと思いますが。")
+        let c = try #require(CorrectionMatcher.match(
+            selection: "モデルは、gpt-6-lunaだと思いますが", history: [e], now: now))
+        #expect(c.pairs == [CorrectionPair(from: "GPT-6、Luna", to: "gpt-6-luna")])
+        #expect(c.unresolved == [])
+        #expect(c.selection == "モデルは、gpt-6-lunaだと思いますが")
+    }
+
+    // 英字の語だけを選んだときは、文中に散らばった文字に一致させない。
+    @Test func latinWordOnlySelectionIsUnresolved() throws {
+        let e = entry("OpenAIのAPIで使うモデルは、GPT-6、Lunaだと思いますが。")
+        let c = try #require(CorrectionMatcher.match(selection: "gpt-6-luna", history: [e], now: now))
+        #expect(c.pairs == [])
+        #expect(c.unresolved == ["gpt-6-luna"])
+    }
+
+    // 大文字と小文字だけの直しも、直しとして扱う。
+    @Test func caseOnlyEditIsAPair() throws {
+        let e = entry("Githubにプッシュしました。")
+        let c = try #require(CorrectionMatcher.match(selection: "GitHubにプッシュ", history: [e], now: now))
+        #expect(c.pairs == [CorrectionPair(from: "Github", to: "GitHub")])
     }
 }

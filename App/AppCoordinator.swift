@@ -186,7 +186,7 @@ import VoiceInputCore
     }
 
     /// 設定でオンにしていて、キーとモデル名（設定ファイルの cloudModel）があれば、置き換え元を OpenAI に探してもらう。
-    private func makeLocator() -> SourceLocator? {
+    private func makeLocator() -> OpenAISourceLocator? {
         guard settings.useCloudLocator, hasOpenAIKey,
               let key = KeychainStore.loadAPIKey(account: KeychainStore.openAIAccount) else { return nil }
         return OpenAISourceLocator.make(apiKey: key, model: settings.cloudModel)
@@ -360,7 +360,10 @@ import VoiceInputCore
                 return
             }
             // AI を待つ間に用語集が変わることがあるので、判断が済んでから、その時点の用語集に足す。
-            let outcome = await CorrectionRegistrar(judge: self.judge, locator: self.makeLocator()).decide(candidates)
+            // OpenAI がオンなら、組み合わせの取り出し（extractor）と、置き換え元探し（locator）の両方に使う。
+            let openAI = self.makeLocator()
+            let outcome = await CorrectionRegistrar(judge: self.judge, locator: openAI, extractor: openAI)
+                .decide(candidates)
             var updated = self.glossary
             guard let registration = CorrectionRegistrar.apply(outcome, to: &updated) else {
                 // OpenAI に聞けなかったせいで登録できなかったときは、そのことを知らせる。

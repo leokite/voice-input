@@ -20,12 +20,16 @@ public struct CorrectionCandidates: Equatable, Sendable {
     public var pairs: [CorrectionPair]
     /// 置き換え元を決められなかった、選択側の語（読みの近い部分がない端の直しや、単語だけの選択）。
     public var unresolved: [String]
+    /// ユーザーが選んだ文字列（前後の空白と句読点を落としたもの）。外部の AI に組み合わせを取り出させるときに使う。
+    public var selection: String
 
-    public init(entryID: UUID, sentence: String, pairs: [CorrectionPair], unresolved: [String]) {
+    public init(entryID: UUID, sentence: String, pairs: [CorrectionPair], unresolved: [String],
+                selection: String = "") {
         self.entryID = entryID
         self.sentence = sentence
         self.pairs = pairs
         self.unresolved = unresolved
+        self.selection = selection
     }
 }
 
@@ -50,11 +54,11 @@ public enum CorrectionMatcher {
         guard let newest = entries.first else { return nil }
         if entries.contains(where: { $0.text.contains(trimmed) }) { return nil }
 
-        let sel = Array(trimmed)
+        let sel = WordUnits.split(trimmed)
         var best: (entry: HistoryEntry, ratio: Double, table: LCSTable)?
         for entry in entries {
-            let table = LCSTable(Array(entry.text), sel)
-            let ratio = Double(table.length) / Double(sel.count)
+            let table = LCSTable(WordUnits.split(entry.text), sel)
+            let ratio = Double(table.length) / Double(trimmed.count)
             guard ratio >= similarityThreshold || table.longestRun() >= minAnchorRun else { continue }
             if best == nil || ratio > best!.ratio { best = (entry, ratio, table) }
         }
@@ -66,11 +70,12 @@ public enum CorrectionMatcher {
                 || unresolved.contains { $0.count > maxEditLength }
             guard count > 0, count <= maxEdits, !tooLong else { return nil }
             return CorrectionCandidates(entryID: best.entry.id, sentence: best.entry.text,
-                                        pairs: pairs, unresolved: unresolved)
+                                        pairs: pairs, unresolved: unresolved, selection: trimmed)
         }
 
-        guard sel.count <= maxWordLength else { return nil }
-        return CorrectionCandidates(entryID: newest.id, sentence: newest.text, pairs: [], unresolved: [trimmed])
+        guard trimmed.count <= maxWordLength else { return nil }
+        return CorrectionCandidates(entryID: newest.id, sentence: newest.text, pairs: [], unresolved: [trimmed],
+                                    selection: trimmed)
     }
 
     /// 端から落とす空白と句読点。
@@ -86,9 +91,9 @@ public enum CorrectionMatcher {
         var unresolved: [String] = []
         var edgePairs: [CorrectionPair] = []
         // 選択の端の直しは、履歴でその手前（後ろ）にある部分から、読みが近いものを置き換え元にする。
-        let leading = String(t.b[0..<first.j]).trimmingCharacters(in: edgeJunk)
+        let leading = t.b[0..<first.j].joined().trimmingCharacters(in: edgeJunk)
         if !leading.isEmpty {
-            if let source = Phonetic.bestSuffix(of: String(t.a[0..<first.i]), soundingLike: leading) {
+            if let source = Phonetic.bestSuffix(of: t.a[0..<first.i].joined(), soundingLike: leading) {
                 edgePairs.append(CorrectionPair(from: source, to: leading))
             } else {
                 unresolved.append(leading)
@@ -98,15 +103,15 @@ public enum CorrectionMatcher {
         // 一致の連続（run）と、その間の差分（gap）に分ける。
         struct Gap { var from: String; var to: String; var runBefore: String }
         var gaps: [Gap] = []
-        var run = String(t.a[first.i])
+        var run = t.a[first.i]
         for (prev, next) in zip(matches, matches.dropFirst()) {
-            let from = String(t.a[(prev.i + 1)..<next.i])
-            let to = String(t.b[(prev.j + 1)..<next.j])
+            let from = t.a[(prev.i + 1)..<next.i].joined()
+            let to = t.b[(prev.j + 1)..<next.j].joined()
             if from.isEmpty && to.isEmpty {
-                run.append(t.a[next.i])
+                run += t.a[next.i]
             } else {
                 gaps.append(Gap(from: from, to: to, runBefore: run))
-                run = String(t.a[next.i])
+                run = t.a[next.i]
             }
         }
 
@@ -125,9 +130,9 @@ public enum CorrectionMatcher {
                            to: $0.to.trimmingCharacters(in: edgeJunk))
         }
 
-        let trailing = String(t.b[(last.j + 1)...]).trimmingCharacters(in: edgeJunk)
+        let trailing = t.b[(last.j + 1)...].joined().trimmingCharacters(in: edgeJunk)
         if !trailing.isEmpty {
-            if let source = Phonetic.bestPrefix(of: String(t.a[(last.i + 1)...]), soundingLike: trailing) {
+            if let source = Phonetic.bestPrefix(of: t.a[(last.i + 1)...].joined(), soundingLike: trailing) {
                 edgePairs.append(CorrectionPair(from: source, to: trailing))
             } else {
                 unresolved.append(trailing)
@@ -137,44 +142,66 @@ public enum CorrectionMatcher {
     }
 }
 
-/// 2 つの文字列の最長共通部分列（文字単位）。`dp[i][j]` は a[i...] と b[j...] の LCS の長さ。
-struct LCSTable {
-    let a: [Character]
-    let b: [Character]
-    private let dp: [[Int]]
+/// 比べる単位。英字・数字と -_+# の並び（"GPT-6"、"gpt-6-luna"）は 1 つの語として、それ以外は 1 文字ずつに分ける。
+/// 語のかたまりで比べることで、1 つの語の直しが "GPT → gpt" と "L → l" のように割れない。
+enum WordUnits {
+    static func isWordChar(_ c: Character) -> Bool {
+        c.isASCII && (c.isLetter || c.isNumber || "-_+#".contains(c))
+    }
 
-    init(_ a: [Character], _ b: [Character]) {
+    static func split(_ s: String) -> [String] {
+        var units: [String] = []
+        var word = ""
+        for c in s {
+            if isWordChar(c) {
+                word.append(c)
+            } else {
+                if !word.isEmpty { units.append(word); word = "" }
+                units.append(String(c))
+            }
+        }
+        if !word.isEmpty { units.append(word) }
+        return units
+    }
+}
+
+/// 2 つの単位列の最長共通部分列。長さは文字数で数える。`dp[i][j]` は a[i...] と b[j...] の共通の文字数。
+/// 文中に散らばった 1 文字だけの一致（「の」など）は、手がかりにならないので対応から除く。
+struct LCSTable {
+    let a: [String]
+    let b: [String]
+    private let dp: [[Int]]
+    private let matches: [(i: Int, j: Int)]
+
+    init(_ a: [String], _ b: [String]) {
         self.a = a
         self.b = b
         var dp = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
         for i in stride(from: a.count - 1, through: 0, by: -1) {
             for j in stride(from: b.count - 1, through: 0, by: -1) {
-                dp[i][j] = a[i] == b[j] ? dp[i + 1][j + 1] + 1 : max(dp[i + 1][j], dp[i][j + 1])
+                dp[i][j] = a[i] == b[j] ? dp[i + 1][j + 1] + a[i].count : max(dp[i + 1][j], dp[i][j + 1])
             }
         }
         self.dp = dp
+        self.matches = Self.dropIsolatedSingles(Self.rawAlignment(a, b, dp), a)
     }
 
-    var length: Int { dp[0][0] }
+    /// 対応に残った一致の文字数。
+    var length: Int { matches.reduce(0) { $0 + a[$1.i].count } }
 
     /// 対応の中で、両側で続けて一致している文字の最長の長さ。
     func longestRun() -> Int {
-        var longest = 0, current = 0
-        var previous: (i: Int, j: Int)?
-        for m in alignment() {
-            if let p = previous, m.i == p.i + 1, m.j == p.j + 1 { current += 1 } else { current = 1 }
-            longest = max(longest, current)
-            previous = m
-        }
-        return longest
+        runs(matches).map { $0.reduce(0) { $0 + a[$1.i].count } }.max() ?? 0
     }
 
-    /// 一致した文字の位置（a の i、b の j）を前から順に返す。
-    func alignment() -> [(i: Int, j: Int)] {
+    /// 一致した単位の位置（a の i、b の j）を前から順に返す。
+    func alignment() -> [(i: Int, j: Int)] { matches }
+
+    private static func rawAlignment(_ a: [String], _ b: [String], _ dp: [[Int]]) -> [(i: Int, j: Int)] {
         var result: [(i: Int, j: Int)] = []
         var i = 0, j = 0
         while i < a.count && j < b.count {
-            if a[i] == b[j] && dp[i][j] == dp[i + 1][j + 1] + 1 {
+            if a[i] == b[j] && dp[i][j] == dp[i + 1][j + 1] + a[i].count {
                 result.append((i, j))
                 i += 1
                 j += 1
@@ -185,5 +212,24 @@ struct LCSTable {
             }
         }
         return result
+    }
+
+    private func runs(_ m: [(i: Int, j: Int)]) -> [[(i: Int, j: Int)]] { Self.runs(m) }
+
+    private static func runs(_ m: [(i: Int, j: Int)]) -> [[(i: Int, j: Int)]] {
+        var result: [[(i: Int, j: Int)]] = []
+        for x in m {
+            if let last = result.last?.last, x.i == last.i + 1, x.j == last.j + 1 {
+                result[result.count - 1].append(x)
+            } else {
+                result.append([x])
+            }
+        }
+        return result
+    }
+
+    /// 前後とつながらない、1 文字だけの一致を除く。
+    private static func dropIsolatedSingles(_ m: [(i: Int, j: Int)], _ a: [String]) -> [(i: Int, j: Int)] {
+        runs(m).filter { run in run.count > 1 || a[run[0].i].count > 1 }.flatMap { $0 }
     }
 }

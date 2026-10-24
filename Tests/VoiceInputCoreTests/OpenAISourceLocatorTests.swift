@@ -69,6 +69,22 @@ private let okBody = #"""
     }
 }
 
+@Suite struct OpenAICorrectionExtractorTests {
+    @Test func requestsPairsAndParsesThem() async throws {
+        let body = #"""
+        {"output":[{"type":"message","content":[{"type":"output_text","text":"{\"pairs\":[{\"from\":\"GPT-6、Luna\",\"to\":\"gpt-6-luna\"}]}"}]}]}
+        """#
+        let transport = FakeTransport(body: body)
+        let locator = OpenAISourceLocator(apiKey: "k", model: "m", send: transport.send)
+        let pairs = try await locator.extract(sentence: "モデルは、GPT-6、Lunaだと思います", selection: "モデルは、gpt-6-lunaだと思います")
+        #expect(pairs == [CorrectionPair(from: "GPT-6、Luna", to: "gpt-6-luna")])
+        let json = try #require(try JSONSerialization.jsonObject(with: transport.request?.httpBody ?? Data()) as? [String: Any])
+        let format = try #require((json["text"] as? [String: Any])?["format"] as? [String: Any])
+        let schema = try #require(format["schema"] as? [String: Any])
+        #expect((schema["required"] as? [String]) == ["pairs"])
+    }
+}
+
 /// OpenAI を実際に呼ぶテスト。`OPENAI_API_KEY` があるときだけ動かす。
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil))
 struct OpenAISourceLocatorLiveTests {
@@ -88,5 +104,23 @@ struct OpenAISourceLocatorLiveTests {
         let source = try await OpenAISourceLocator(apiKey: key, model: model).locate(word: word, in: sentence)
         print("LIVE", word, source ?? "nil", String(format: "%.2fs", Date().timeIntervalSince(started)))
         #expect(source == expected)
+    }
+}
+
+/// OpenAI に組み合わせを取り出させる実機テスト。`OPENAI_API_KEY` があるときだけ動かす。
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["OPENAI_API_KEY"] != nil))
+struct OpenAICorrectionExtractorLiveTests {
+    @Test func extractsWholeModelName() async throws {
+        let key = try #require(ProcessInfo.processInfo.environment["OPENAI_API_KEY"])
+        let settings = JSONStore(url: AppPaths.supportDirectory.appendingPathComponent("settings.json"),
+                                 defaultValue: AppSettings.default).load()
+        let model = ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? settings.cloudModel
+        try #require(!model.isEmpty)
+        let started = Date()
+        let pairs = try await OpenAISourceLocator(apiKey: key, model: model).extract(
+            sentence: "OpenAIのAPIで使うモデルは、GPT-6、Lunaだと思いますが。",
+            selection: "モデルは、gpt-6-lunaだと思いますが")
+        print("LIVE extract", pairs, String(format: "%.2fs", Date().timeIntervalSince(started)))
+        #expect(pairs == [CorrectionPair(from: "GPT-6、Luna", to: "gpt-6-luna")])
     }
 }
