@@ -109,12 +109,16 @@ public final class PasteboardInserter: TextInserter, @unchecked Sendable {
         p.original.restore(to: pasteboard)
     }
 
+    /// `eventSourceUserData` of the events we post, so our own key tap can skip them ("VOIC").
+    public static let syntheticEventTag: Int64 = 0x564F_4943
+
     /// Posts Cmd+V (virtual key 0x09) to the HID event tap. Not exercised in tests.
     public static func sendCommandV() {
         let source = CGEventSource(stateID: .combinedSessionState)
         for keyDown in [true, false] {
             guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: keyDown) else { continue }
             event.flags = .maskCommand
+            event.setIntegerValueField(.eventSourceUserData, value: syntheticEventTag)
             event.post(tap: .cghidEventTap)
         }
     }

@@ -105,6 +105,10 @@ private func keyTapCallback(
 ) -> Unmanaged<CGEvent>? {
     guard let refcon else { return Unmanaged.passUnretained(event) }
     let monitor = Unmanaged<GlobalKeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
+    // 文字を入れるために自分で送った Cmd+V。録音キーとの同時押しや、録音を捨てる操作と見なさない。
+    if event.getIntegerValueField(.eventSourceUserData) == PasteboardInserter.syntheticEventTag {
+        return Unmanaged.passUnretained(event)
+    }
     let keyCode = UInt16(truncatingIfNeeded: event.getIntegerValueField(.keyboardEventKeycode))
     let pass = monitor.handle(type: type, keyCode: keyCode, flags: event.flags.rawValue)
     return pass ? Unmanaged.passUnretained(event) : nil
