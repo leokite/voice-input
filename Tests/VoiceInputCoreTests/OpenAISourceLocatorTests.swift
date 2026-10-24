@@ -54,6 +54,12 @@ private let okBody = #"""
         #expect(try await locator.locate(word: "Docker", in: "コンテナを再起動") == nil)
     }
 
+    @Test func emptyModelOrKeyMeansNoLocator() {
+        #expect(OpenAISourceLocator.make(apiKey: "k", model: "  ") == nil)
+        #expect(OpenAISourceLocator.make(apiKey: "", model: "gpt-6-luna") == nil)
+        #expect(OpenAISourceLocator.make(apiKey: "k", model: " gpt-6-luna ")?.model == "gpt-6-luna")
+    }
+
     @Test func httpErrorThrows() async {
         let locator = OpenAISourceLocator(apiKey: "bad", model: "gpt-6-luna",
                                           send: FakeTransport(status: 401, body: "{}").send)
@@ -74,7 +80,12 @@ struct OpenAISourceLocatorLiveTests {
     func locatesRealSources(word: String, sentence: String, expected: String) async throws {
         let key = try #require(ProcessInfo.processInfo.environment["OPENAI_API_KEY"])
         let started = Date()
-        let source = try await OpenAISourceLocator(apiKey: key, model: "gpt-6-luna").locate(word: word, in: sentence)
+        // モデル名は、環境変数 OPENAI_MODEL か、アプリの設定ファイルの cloudModel から読む。
+        let settings = JSONStore(url: AppPaths.supportDirectory.appendingPathComponent("settings.json"),
+                                 defaultValue: AppSettings.default).load()
+        let model = ProcessInfo.processInfo.environment["OPENAI_MODEL"] ?? settings.cloudModel
+        try #require(!model.isEmpty)
+        let source = try await OpenAISourceLocator(apiKey: key, model: model).locate(word: word, in: sentence)
         print("LIVE", word, source ?? "nil", String(format: "%.2fs", Date().timeIntervalSince(started)))
         #expect(source == expected)
     }

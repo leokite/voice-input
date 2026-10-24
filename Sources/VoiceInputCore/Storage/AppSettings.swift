@@ -17,6 +17,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var glossaryShortcut: Shortcut
     /// 単語だけを選んだときなどに、OpenAI で置き換え元を探すか。
     public var useCloudLocator: Bool
+    /// OpenAI のモデル名（例 "gpt-6-luna"）。コードには持たず、設定ファイルに書かれた値だけを使う。空なら OpenAI を使わない。
     public var cloudModel: String
 
     public static let `default` = AppSettings(
@@ -31,7 +32,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         launchAtLogin: false,
         glossaryShortcut: .glossaryDefault,
         useCloudLocator: false,
-        cloudModel: "gpt-6-luna"
+        cloudModel: ""
     )
 
     public init(
@@ -46,7 +47,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         launchAtLogin: Bool = false,
         glossaryShortcut: Shortcut = .glossaryDefault,
         useCloudLocator: Bool = false,
-        cloudModel: String = "gpt-6-luna"
+        cloudModel: String = ""
     ) {
         self.toggleKey = toggleKey
         self.holdKey = holdKey

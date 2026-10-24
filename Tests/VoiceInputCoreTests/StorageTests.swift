@@ -97,6 +97,12 @@ import Testing
     @Test func cloudLocatorDefaultsOff() throws {
         let s = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"insertionMode":"batch"}"#.utf8))
         #expect(s.useCloudLocator == false)
-        #expect(s.cloudModel == "gpt-6-luna")
+        // モデル名はコードに持たない。設定ファイルに書かれた値だけを使う。
+        #expect(s.cloudModel == "")
+    }
+
+    @Test func cloudModelIsReadFromSettingsFile() throws {
+        let s = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"cloudModel":"gpt-7-nova"}"#.utf8))
+        #expect(s.cloudModel == "gpt-7-nova")
     }
 }
