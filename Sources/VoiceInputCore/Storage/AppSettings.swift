@@ -14,6 +14,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var silenceTimeout: TimeInterval
     public var historyLimit: Int
     public var launchAtLogin: Bool
+    public var glossaryShortcut: Shortcut
 
     public static let `default` = AppSettings(
         toggleKey: .rightOption,
@@ -24,7 +25,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         fillers: FillerRemover.defaultFillers,
         silenceTimeout: 60,
         historyLimit: 200,
-        launchAtLogin: false
+        launchAtLogin: false,
+        glossaryShortcut: .glossaryDefault
     )
 
     public init(
@@ -36,7 +38,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         fillers: [String] = FillerRemover.defaultFillers,
         silenceTimeout: TimeInterval = 60,
         historyLimit: Int = 200,
-        launchAtLogin: Bool = false
+        launchAtLogin: Bool = false,
+        glossaryShortcut: Shortcut = .glossaryDefault
     ) {
         self.toggleKey = toggleKey
         self.holdKey = holdKey
@@ -47,6 +50,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.silenceTimeout = silenceTimeout
         self.historyLimit = historyLimit
         self.launchAtLogin = launchAtLogin
+        self.glossaryShortcut = glossaryShortcut
     }
 
     public init(from decoder: Decoder) throws {
@@ -61,5 +65,6 @@ public struct AppSettings: Codable, Equatable, Sendable {
         silenceTimeout = try c.decodeIfPresent(TimeInterval.self, forKey: .silenceTimeout) ?? d.silenceTimeout
         historyLimit = try c.decodeIfPresent(Int.self, forKey: .historyLimit) ?? d.historyLimit
         launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? d.launchAtLogin
+        glossaryShortcut = try c.decodeIfPresent(Shortcut.self, forKey: .glossaryShortcut) ?? d.glossaryShortcut
     }
 }
