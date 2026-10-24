@@ -21,6 +21,16 @@ private struct FakeJudge: CorrectionJudge {
     }
 }
 
+/// 答えを決めておける偽物の外部AI。
+private struct FakeLocator: SourceLocator {
+    var source: String?
+    var hang = false
+    func locate(word: String, in sentence: String) async throws -> String? {
+        if hang { try await Task.sleep(for: .seconds(3600)) }
+        return source
+    }
+}
+
 @Suite struct CorrectionRegistrarTests {
     let id = UUID()
 
@@ -159,5 +169,30 @@ private struct FakeJudge: CorrectionJudge {
                        unresolved: ["ました", "X", "明日Docker"]), into: &g)
         #expect(r == nil)
         #expect(g == .empty)
+    }
+
+    // 外部AI: 単語だけの選択でも、置き換え元を見つけられる。
+    @Test func locatorResolvesUnresolvedWord() async throws {
+        var g = Glossary.empty
+        let r = CorrectionRegistrar(judge: FakeJudge(), locator: FakeLocator(source: "どうか"))
+        _ = await r.register(candidates(unresolved: ["Docker"]), into: &g)
+        #expect(g.replacements.map { "\($0.from)→\($0.to)" } == ["どうか→Docker"])
+    }
+
+    @Test func locatorAnswerNotInSentenceIsIgnored() async throws {
+        var g = Glossary.empty
+        let r = CorrectionRegistrar(judge: FakeJudge(), locator: FakeLocator(source: "ドッカー"))
+        _ = await r.register(candidates(unresolved: ["Docker"]), into: &g)
+        #expect(g.replacements.isEmpty)
+        #expect(g.terms.map(\.text) == ["Docker"])
+    }
+
+    @Test func locatorTimeoutFallsBackToHint() async throws {
+        var g = Glossary.empty
+        let r = CorrectionRegistrar(judge: FakeJudge(), locator: FakeLocator(hang: true),
+                                    locatorTimeout: .milliseconds(50))
+        _ = await r.register(candidates(unresolved: ["Docker"]), into: &g)
+        #expect(g.replacements.isEmpty)
+        #expect(g.terms.map(\.text) == ["Docker"])
     }
 }

@@ -7,6 +7,8 @@ struct SettingsView: View {
     @ObservedObject var coordinator: AppCoordinator
     @State private var apiKeyInput = ""
     @State private var apiKeyError: String?
+    @State private var openAIKeyInput = ""
+    @State private var openAIKeyError: String?
     @State private var languageText = ""
     @State private var newFiller = ""
     @State private var launchError: String?
@@ -97,6 +99,26 @@ struct SettingsView: View {
                 }
                 ShortcutRecorderRow(title: "直した単語を登録するキー", shortcut: binding(\.glossaryShortcut),
                                     coordinator: coordinator)
+                Toggle("外部AI（OpenAI）で置き換え元を探す", isOn: binding(\.useCloudLocator))
+                if coordinator.settings.useCloudLocator {
+                    Text("単語だけを選んだときなどに、直前の音声入力の文と直した語を OpenAI（\(coordinator.settings.cloudModel)）に送ります。")
+                        .foregroundStyle(.secondary)
+                    SecureField("OpenAI API キー", text: $openAIKeyInput)
+                    HStack {
+                        Button("保存") { saveOpenAIKey() }
+                            .disabled(openAIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("削除", role: .destructive) {
+                            coordinator.deleteOpenAIKey()
+                            openAIKeyInput = ""
+                        }
+                        .disabled(!coordinator.hasOpenAIKey)
+                        if coordinator.hasOpenAIKey { Text("保存済み").foregroundStyle(.secondary) }
+                    }
+                    if let openAIKeyError { Text(openAIKeyError).foregroundStyle(.red) }
+                    if !coordinator.hasOpenAIKey {
+                        Text("キーがないので、今は読みの近さだけで探します。").foregroundStyle(.orange)
+                    }
+                }
                 switch coordinator.judgeAvailability {
                 case .available:
                     Text("端末内AIで置き換えを判断します").foregroundStyle(.secondary)
@@ -144,6 +166,17 @@ struct SettingsView: View {
         s.fillers.append(text)
         coordinator.updateSettings(s)
         newFiller = ""
+    }
+
+    private func saveOpenAIKey() {
+        let key = openAIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try coordinator.saveOpenAIKey(key)
+            openAIKeyError = nil
+            openAIKeyInput = ""
+        } catch {
+            openAIKeyError = "キーチェーンに保存できません: \(error.localizedDescription)"
+        }
     }
 
     private func saveKey() {

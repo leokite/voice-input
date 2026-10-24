@@ -6,6 +6,12 @@ public protocol CorrectionJudge: Sendable {
     func isCommonWord(_ word: String) async throws -> Bool
 }
 
+/// 置き換え元を探してもらう外部の AI。読みの近さで見つからなかった語にだけ使う。
+public protocol SourceLocator: Sendable {
+    /// sentence の中で、word に直されたと考えられる部分をそのまま返す。見つからなければ nil。
+    func locate(word: String, in sentence: String) async throws -> String?
+}
+
 /// 1 回の登録で用語集に足したもの。取り消しに使う。
 public struct Registration: Equatable, Sendable {
     public var addedTerms: [String]
@@ -16,13 +22,18 @@ public struct Registration: Equatable, Sendable {
 /// 直しの候補を、用語集に登録する規則。
 public struct CorrectionRegistrar: Sendable {
     private let judge: CorrectionJudge?
+    private let locator: SourceLocator?
     private let timeout: Duration
+    private let locatorTimeout: Duration
     private let sleep: @Sendable (Duration) async -> Void
 
-    public init(judge: CorrectionJudge?, timeout: Duration = .milliseconds(1500),
+    public init(judge: CorrectionJudge?, locator: SourceLocator? = nil,
+                timeout: Duration = .milliseconds(1500), locatorTimeout: Duration = .seconds(3),
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.judge = judge
+        self.locator = locator
         self.timeout = timeout
+        self.locatorTimeout = locatorTimeout
         self.sleep = sleep
     }
 
@@ -35,9 +46,20 @@ public struct CorrectionRegistrar: Sendable {
     /// AI に聞いて、候補ごとの判断を決める。用語集には触らない。
     /// AI への質問は並べて行う（全体でも待ち時間はおよそ timeout まで）。
     public func decide(_ c: CorrectionCandidates) async -> [Decision] {
-        let pairs = c.pairs.filter(Self.isWorthRegistering)
-        // 置き換え元が決まっていない語は、認識のヒントとしてだけ登録する。
-        let hintsOnly = c.unresolved.filter(Self.isWorthAsTerm)
+        var located: [CorrectionPair] = []
+        var hintsOnly: [String] = []
+        // 置き換え元が決まっていない語は、外部の AI があれば聞く。答えが履歴の文にあるときだけ使う。
+        // 見つからなければ、認識のヒントとしてだけ登録する。
+        for word in c.unresolved.filter(Self.isWorthAsTerm) {
+            if let locator,
+               let source = await bounded(locatorTimeout, { try await locator.locate(word: word, in: c.sentence) }) ?? nil,
+               !source.isEmpty, source != word, c.sentence.contains(source) {
+                located.append(CorrectionPair(from: source, to: word))
+            } else {
+                hintsOnly.append(word)
+            }
+        }
+        let pairs = (c.pairs + located).filter(Self.isWorthRegistering)
         let replaceable = await withTaskGroup(of: (Int, Bool).self) { group in
             for (index, pair) in pairs.enumerated() where pair.from.count >= Self.minReplacementSource {
                 group.addTask {
@@ -103,10 +125,14 @@ public struct CorrectionRegistrar: Sendable {
     /// AI に聞く。AI がない、時間切れ、エラーのときは nil。
     fileprivate func ask<T: Sendable>(_ op: @escaping @Sendable (CorrectionJudge) async throws -> T) async -> T? {
         guard let judge else { return nil }
-        let timeout = timeout
+        return await bounded(timeout) { try await op(judge) }
+    }
+
+    /// timeout までに終わらなければ nil。エラーのときも nil。
+    private func bounded<T: Sendable>(_ timeout: Duration, _ op: @escaping @Sendable () async throws -> T) async -> T? {
         let sleep = sleep
         return await withTaskGroup(of: T?.self) { group in
-            group.addTask { try? await op(judge) }
+            group.addTask { try? await op() }
             group.addTask {
                 await sleep(timeout)
                 return nil

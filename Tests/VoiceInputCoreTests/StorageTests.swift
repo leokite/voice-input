@@ -81,4 +81,22 @@ import Testing
         KeychainStore.deleteAPIKey(service: service)
         #expect(KeychainStore.loadAPIKey(service: service) == nil)
     }
+
+    @Test func keychainAccountsAreSeparate() throws {
+        let service = "dev.ykazama.VoiceInput.tests.accounts"
+        defer {
+            KeychainStore.deleteAPIKey(service: service)
+            KeychainStore.deleteAPIKey(service: service, account: KeychainStore.openAIAccount)
+        }
+        try KeychainStore.saveAPIKey("soniox", service: service)
+        try KeychainStore.saveAPIKey("openai", service: service, account: KeychainStore.openAIAccount)
+        #expect(KeychainStore.loadAPIKey(service: service) == "soniox")
+        #expect(KeychainStore.loadAPIKey(service: service, account: KeychainStore.openAIAccount) == "openai")
+    }
+
+    @Test func cloudLocatorDefaultsOff() throws {
+        let s = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"insertionMode":"batch"}"#.utf8))
+        #expect(s.useCloudLocator == false)
+        #expect(s.cloudModel == "gpt-6-luna")
+    }
 }

@@ -14,6 +14,8 @@ import VoiceInputCore
     @Published private(set) var capturingKey = false
     /// キーチェーンに API キーがあるか。画面から繰り返し読まないよう、保存と削除のときだけ更新する。
     @Published private(set) var hasAPIKey = false
+    /// キーチェーンに OpenAI の API キーがあるか。
+    @Published private(set) var hasOpenAIKey = false
     /// 端末内AIを使えるか。使えないときは置き換えを登録せず、認識のヒントだけを登録する。
     @Published private(set) var judgeAvailability: JudgeAvailability
     /// 案内の画面を開く。AppDelegate が WindowPresenter につなぐ。
@@ -58,6 +60,7 @@ import VoiceInputCore
         self.settings = settings
         glossary = glossaryStore.load()
         hasAPIKey = !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
+        hasOpenAIKey = !(KeychainStore.loadAPIKey(account: KeychainStore.openAIAccount)?.isEmpty ?? true)
         history = historyStore.load()
         watchedKeys = LockedValue([settings.toggleKey, settings.holdKey])
         glossaryShortcut = LockedValue(settings.glossaryShortcut)
@@ -170,6 +173,23 @@ import VoiceInputCore
     func deleteAPIKey() {
         KeychainStore.deleteAPIKey()
         hasAPIKey = false
+    }
+
+    func saveOpenAIKey(_ key: String) throws {
+        try KeychainStore.saveAPIKey(key, account: KeychainStore.openAIAccount)
+        hasOpenAIKey = true
+    }
+
+    func deleteOpenAIKey() {
+        KeychainStore.deleteAPIKey(account: KeychainStore.openAIAccount)
+        hasOpenAIKey = false
+    }
+
+    /// 設定でオンにしていて、キーがあれば、置き換え元を OpenAI に探してもらう。
+    private func makeLocator() -> SourceLocator? {
+        guard settings.useCloudLocator, hasOpenAIKey,
+              let key = KeychainStore.loadAPIKey(account: KeychainStore.openAIAccount), !key.isEmpty else { return nil }
+        return OpenAISourceLocator(apiKey: key, model: settings.cloudModel)
     }
 
     func updateGlossary(_ new: Glossary) {
@@ -340,7 +360,7 @@ import VoiceInputCore
                 return
             }
             // AI を待つ間に用語集が変わることがあるので、判断が済んでから、その時点の用語集に足す。
-            let decisions = await CorrectionRegistrar(judge: self.judge).decide(candidates)
+            let decisions = await CorrectionRegistrar(judge: self.judge, locator: self.makeLocator()).decide(candidates)
             var updated = self.glossary
             guard let registration = CorrectionRegistrar.apply(decisions, to: &updated) else {
                 self.showOverlayMessage(.notice("登録できる直しが見つかりませんでした"))
