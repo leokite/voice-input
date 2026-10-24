@@ -6,15 +6,9 @@ private struct JudgeError: Error {}
 
 /// 答えを決めておける偽物の AI。`hang` なら答えを返さずに待ち続ける。
 private struct FakeJudge: CorrectionJudge {
-    var source: String? = nil
     var common: Set<String> = []
     var fails = false
     var hang = false
-
-    func locateSource(of word: String, in sentence: String) async throws -> String? {
-        try await wait()
-        return source
-    }
 
     func isCommonWord(_ word: String) async throws -> Bool {
         try await wait()
@@ -57,17 +51,12 @@ private struct FakeJudge: CorrectionJudge {
         #expect(r.message == "Docker を登録しました")
     }
 
-    @Test func unresolvedPieceUsesJudgeLocatedSource() async throws {
+    @Test func unresolvedIsAlwaysHintOnly() async throws {
         var g = Glossary.empty
-        _ = await registrar(FakeJudge(source: "どうか")).register(candidates(unresolved: ["Docker"]), into: &g)
-        #expect(g.replacements.map { "\($0.from)→\($0.to)" } == ["どうか→Docker"])
-    }
-
-    @Test func judgeSourceNotInSentenceFallsBackToHintOnly() async throws {
-        var g = Glossary.empty
-        _ = await registrar(FakeJudge(source: "ドッカー")).register(candidates(unresolved: ["Docker"]), into: &g)
+        let r = try #require(await registrar(FakeJudge()).register(candidates(unresolved: ["Docker"]), into: &g))
         #expect(g.replacements.isEmpty)
         #expect(g.terms.map(\.text) == ["Docker"])
+        #expect(r.message == "Docker を登録しました")
     }
 
     @Test func noJudgeMeansHintOnly() async throws {
@@ -88,10 +77,10 @@ private struct FakeJudge: CorrectionJudge {
 
     @Test func judgeErrorMeansHintOnly() async throws {
         var g = Glossary.empty
-        _ = await registrar(FakeJudge(source: "どうか", fails: true)).register(
-            candidates(unresolved: ["Docker"]), into: &g)
+        _ = await registrar(FakeJudge(fails: true)).register(
+            candidates(pairs: [CorrectionPair(from: "キューバーニーツ", to: "Kubernetes")]), into: &g)
         #expect(g.replacements.isEmpty)
-        #expect(g.terms.map(\.text) == ["Docker"])
+        #expect(g.terms.map(\.text) == ["Kubernetes"])
     }
 
     @Test func discardsTrivialPairs() async {

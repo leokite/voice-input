@@ -19,13 +19,28 @@ import Testing
         #expect(c.entryID == e.id)
     }
 
-    @Test func editAtSelectionEdgeBecomesUnresolved() throws {
-        let e = entry("どうかコンテナを再起動してからAPIを確認します。")
+    @Test func editAtSelectionEdgeUsesSoundAlikeSource() throws {
+        let e = entry("今日はどうかコンテナを再起動してからAPIを確認します。")
+        let c = try #require(CorrectionMatcher.match(
+            selection: "Dockerコンテナを再起動", history: [e], now: now))
+        #expect(c.pairs == [CorrectionPair(from: "どうか", to: "Docker")])
+        #expect(c.unresolved == [])
+        #expect(c.sentence == e.text)
+    }
+
+    @Test func editAtSelectionEdgeWithoutSoundAlikeStaysUnresolved() throws {
+        let e = entry("コンテナを再起動してからAPIを確認します。")
         let c = try #require(CorrectionMatcher.match(
             selection: "Dockerコンテナを再起動", history: [e], now: now))
         #expect(c.pairs == [])
         #expect(c.unresolved == ["Docker"])
-        #expect(c.sentence == e.text)
+    }
+
+    @Test func trailingEditUsesSoundAlikeSource() throws {
+        let e = entry("新しい機能をぎっとはぶにプッシュしました。")
+        let c = try #require(CorrectionMatcher.match(
+            selection: "新しい機能をGitHub", history: [e], now: now))
+        #expect(c.pairs == [CorrectionPair(from: "ぎっとはぶ", to: "GitHub")])
     }
 
     @Test func wordOnlySelectionUsesNewestEntry() throws {

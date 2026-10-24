@@ -2,8 +2,6 @@ import Foundation
 
 /// 直しの判断を任せる AI。
 public protocol CorrectionJudge: Sendable {
-    /// sentence の中で、word に直されたと考えられる部分をそのまま返す。見つからなければ nil か空文字。
-    func locateSource(of word: String, in sentence: String) async throws -> String?
     /// 日常的に使われる普通の言葉なら true。
     func isCommonWord(_ word: String) async throws -> Bool
 }
@@ -30,18 +28,9 @@ public struct CorrectionRegistrar: Sendable {
 
     /// 登録するものがなければ nil。
     public func register(_ c: CorrectionCandidates, into glossary: inout Glossary) async -> Registration? {
-        var pairs = c.pairs
-        var hintsOnly: [String] = []
-        for word in c.unresolved {
-            if let source = await ask({ judge in try await judge.locateSource(of: word, in: c.sentence) }) ?? nil,
-               !source.isEmpty, c.sentence.contains(source) {
-                pairs.append(CorrectionPair(from: source, to: word))
-            } else {
-                hintsOnly.append(word)
-            }
-        }
-        pairs = pairs.filter(Self.isWorthRegistering)
-        hintsOnly = hintsOnly.filter { !Self.isBlank($0) }
+        // 置き換え元が決まっていない語は、認識のヒントとしてだけ登録する。
+        let pairs = c.pairs.filter(Self.isWorthRegistering)
+        let hintsOnly = c.unresolved.filter { !Self.isBlank($0) }
 
         let before = glossary
         var registered: [(pair: CorrectionPair, replacement: Bool)] = []

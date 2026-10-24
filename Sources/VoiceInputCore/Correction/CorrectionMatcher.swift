@@ -18,7 +18,7 @@ public struct CorrectionCandidates: Equatable, Sendable {
     public var sentence: String
     /// 置き換え元までプログラムで決まった組み合わせ。
     public var pairs: [CorrectionPair]
-    /// 置き換え元を決められなかった、選択側の語（選択の端の直しや、単語だけの選択）。
+    /// 置き換え元を決められなかった、選択側の語（読みの近い部分がない端の直しや、単語だけの選択）。
     public var unresolved: [String]
 
     public init(entryID: UUID, sentence: String, pairs: [CorrectionPair], unresolved: [String]) {
@@ -69,15 +69,24 @@ public enum CorrectionMatcher {
         return CorrectionCandidates(entryID: newest.id, sentence: newest.text, pairs: [], unresolved: [trimmed])
     }
 
-    /// 対応をたどって差分を取り出す。両側が一致に挟まれた差分は組み合わせに、選択の端の差分は未解決にする。
+    /// 対応をたどって差分を取り出す。両側が一致に挟まれた差分は組み合わせにする。
+    /// 選択の端の差分は、読みの近い置き換え元が見つかれば組み合わせに、見つからなければ未解決にする。
     /// 空白だけの一致を挟んだ差分は 1 つにまとめる（"CI" → "GitHub Actions" のような語の直しを分けないため）。
     static func edits(_ t: LCSTable) -> (pairs: [CorrectionPair], unresolved: [String]) {
         let matches = t.alignment()
         guard let first = matches.first, let last = matches.last else { return ([], []) }
 
         var unresolved: [String] = []
-        let leading = String(t.b[0..<first.j])
-        if !leading.isEmpty { unresolved.append(leading) }
+        var edgePairs: [CorrectionPair] = []
+        // 選択の端の直しは、履歴でその手前（後ろ）にある部分から、読みが近いものを置き換え元にする。
+        let leading = String(t.b[0..<first.j]).trimmingCharacters(in: .whitespaces)
+        if !leading.isEmpty {
+            if let source = Phonetic.bestSuffix(of: String(t.a[0..<first.i]), soundingLike: leading) {
+                edgePairs.append(CorrectionPair(from: source, to: leading))
+            } else {
+                unresolved.append(leading)
+            }
+        }
 
         // 一致の連続（run）と、その間の差分（gap）に分ける。
         struct Gap { var from: String; var to: String; var runBefore: String }
@@ -109,9 +118,15 @@ public enum CorrectionMatcher {
                            to: $0.to.trimmingCharacters(in: .whitespaces))
         }
 
-        let trailing = String(t.b[(last.j + 1)...])
-        if !trailing.isEmpty { unresolved.append(trailing) }
-        return (pairs, unresolved.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+        let trailing = String(t.b[(last.j + 1)...]).trimmingCharacters(in: .whitespaces)
+        if !trailing.isEmpty {
+            if let source = Phonetic.bestPrefix(of: String(t.a[(last.i + 1)...]), soundingLike: trailing) {
+                edgePairs.append(CorrectionPair(from: source, to: trailing))
+            } else {
+                unresolved.append(trailing)
+            }
+        }
+        return (edgePairs.prefix(1) + pairs + edgePairs.dropFirst(), unresolved)
     }
 }
 
