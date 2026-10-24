@@ -28,13 +28,44 @@ public struct CorrectionRegistrar: Sendable {
     private let sleep: @Sendable (Duration) async -> Void
 
     public init(judge: CorrectionJudge?, locator: SourceLocator? = nil,
-                timeout: Duration = .milliseconds(1500), locatorTimeout: Duration = .seconds(3),
+                timeout: Duration = .milliseconds(1500), locatorTimeout: Duration = defaultLocatorTimeout,
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.judge = judge
         self.locator = locator
         self.timeout = timeout
         self.locatorTimeout = locatorTimeout
         self.sleep = sleep
+    }
+
+    /// OpenAI を待つ時間。登録は文字起こしとは別の操作で、多少遅くても困らないので長めにとる。
+    public static let defaultLocatorTimeout: Duration = .seconds(5)
+
+    /// OpenAI に聞けなかった理由。ユーザーが異変に気づけるよう、表示に添える。
+    public enum LocatorIssue: Equatable, Sendable {
+        case timedOut(Duration)
+        case failed
+
+        var reason: String {
+            switch self {
+            case .timedOut(let d):
+                let c = d.components
+                let seconds = Double(c.seconds) + Double(c.attoseconds) / 1e18
+                return "OpenAI の応答が \(String(format: "%g", seconds)) 秒を超えたため"
+            case .failed:
+                return "OpenAI に接続できなかったため"
+            }
+        }
+    }
+
+    /// 判断の結果。
+    public struct Outcome: Equatable, Sendable {
+        public var decisions: [Decision]
+        public var locatorIssue: LocatorIssue?
+
+        /// 何も登録できなかったときに出す文言。OpenAI に聞けなかったときだけ。
+        public var locatorProblem: String? {
+            locatorIssue.map { "\($0.reason)、登録できませんでした" }
+        }
     }
 
     /// 用語集に足すかどうかの判断。置き換えにするか（replace）、認識のヒントだけにするか。
@@ -45,17 +76,27 @@ public struct CorrectionRegistrar: Sendable {
 
     /// AI に聞いて、候補ごとの判断を決める。用語集には触らない。
     /// AI への質問は並べて行う（全体でも待ち時間はおよそ timeout まで）。
-    public func decide(_ c: CorrectionCandidates) async -> [Decision] {
+    public func decide(_ c: CorrectionCandidates) async -> Outcome {
         var located: [CorrectionPair] = []
         var hintsOnly: [String] = []
+        var issue: LocatorIssue?
         // 置き換え元が決まっていない語は、外部の AI があれば聞く。答えが履歴の文にあるときだけ使う。
         // 見つからなければ、認識のヒントとしてだけ登録する。
         for word in c.unresolved.filter(Self.isWorthAsTerm) {
-            if let locator,
-               let source = await bounded(locatorTimeout, { try await locator.locate(word: word, in: c.sentence) }) ?? nil,
-               !source.isEmpty, source != word, c.sentence.contains(source) {
+            guard let locator else {
+                hintsOnly.append(word)
+                continue
+            }
+            switch await locate(locator, word, c.sentence) {
+            case .answer(let source?) where !source.isEmpty && source != word && c.sentence.contains(source):
                 located.append(CorrectionPair(from: source, to: word))
-            } else {
+            case .answer:
+                hintsOnly.append(word)
+            case .timedOut:
+                issue = .timedOut(locatorTimeout)
+                hintsOnly.append(word)
+            case .failed:
+                if issue == nil { issue = .failed }
                 hintsOnly.append(word)
             }
         }
@@ -71,12 +112,14 @@ public struct CorrectionRegistrar: Sendable {
             for await (index, replace) in group where replace { result.insert(index) }
             return result
         }
-        return pairs.enumerated().map { Decision(pair: $0.element, replace: replaceable.contains($0.offset)) }
+        let decisions = pairs.enumerated().map { Decision(pair: $0.element, replace: replaceable.contains($0.offset)) }
             + hintsOnly.map { Decision(pair: CorrectionPair(from: "", to: $0), replace: false) }
+        return Outcome(decisions: decisions, locatorIssue: issue)
     }
 
     /// 判断を用語集に足す。足したものがなければ nil。表示には、実際に足したものだけを数える。
-    public static func apply(_ decisions: [Decision], to glossary: inout Glossary) -> Registration? {
+    public static func apply(_ outcome: Outcome, to glossary: inout Glossary) -> Registration? {
+        let decisions = outcome.decisions
         let before = glossary
         var added: [Decision] = []
         for d in decisions {
@@ -106,7 +149,8 @@ public struct CorrectionRegistrar: Sendable {
         } else {
             message = "\(first.pair.to) を登録しました"
         }
-        return Registration(addedTerms: addedTerms, addedReplacementIDs: addedIDs, message: message)
+        let note = outcome.locatorIssue.map { "（\($0.reason)、ヒントだけ登録しました）" } ?? ""
+        return Registration(addedTerms: addedTerms, addedReplacementIDs: addedIDs, message: message + note)
     }
 
     /// 判断して、そのまま用語集に足す。登録するものがなければ nil。
@@ -120,6 +164,30 @@ public struct CorrectionRegistrar: Sendable {
         let terms = Set(r.addedTerms)
         glossary.replacements.removeAll { ids.contains($0.id) }
         glossary.terms.removeAll { terms.contains($0.text) }
+    }
+
+    private enum LocateResult: Sendable {
+        case answer(String?)
+        case timedOut
+        case failed
+    }
+
+    /// OpenAI に聞く。時間切れとエラーを分けて返す。
+    private func locate(_ locator: SourceLocator, _ word: String, _ sentence: String) async -> LocateResult {
+        let sleep = sleep
+        let timeout = locatorTimeout
+        return await withTaskGroup(of: LocateResult.self) { group in
+            group.addTask {
+                do { return .answer(try await locator.locate(word: word, in: sentence)) } catch { return .failed }
+            }
+            group.addTask {
+                await sleep(timeout)
+                return .timedOut
+            }
+            let first = await group.next() ?? .timedOut
+            group.cancelAll()
+            return first
+        }
     }
 
     /// AI に聞く。AI がない、時間切れ、エラーのときは nil。

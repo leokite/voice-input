@@ -25,8 +25,10 @@ private struct FakeJudge: CorrectionJudge {
 private struct FakeLocator: SourceLocator {
     var source: String?
     var hang = false
+    var fails = false
     func locate(word: String, in sentence: String) async throws -> String? {
         if hang { try await Task.sleep(for: .seconds(3600)) }
+        if fails { throw JudgeError() }
         return source
     }
 }
@@ -191,8 +193,31 @@ private struct FakeLocator: SourceLocator {
         var g = Glossary.empty
         let r = CorrectionRegistrar(judge: FakeJudge(), locator: FakeLocator(hang: true),
                                     locatorTimeout: .milliseconds(50))
-        _ = await r.register(candidates(unresolved: ["Docker"]), into: &g)
+        let reg = try #require(await r.register(candidates(unresolved: ["Docker"]), into: &g))
         #expect(g.replacements.isEmpty)
         #expect(g.terms.map(\.text) == ["Docker"])
+        // 時間切れは、ユーザーが気づけるように表示に添える。
+        #expect(reg.message == "Docker を登録しました（OpenAI の応答が 0.05 秒を超えたため、ヒントだけ登録しました）")
+    }
+
+    @Test func locatorFailureIsShownInMessage() async throws {
+        var g = Glossary.empty
+        let r = CorrectionRegistrar(judge: FakeJudge(), locator: FakeLocator(fails: true))
+        let reg = try #require(await r.register(candidates(unresolved: ["Docker"]), into: &g))
+        #expect(reg.message == "Docker を登録しました（OpenAI に接続できなかったため、ヒントだけ登録しました）")
+    }
+
+    @Test func locatorTimeoutWithNothingToRegisterIsReported() async {
+        let r = CorrectionRegistrar(judge: FakeJudge(), locator: FakeLocator(hang: true),
+                                    locatorTimeout: .milliseconds(50))
+        var g = Glossary.empty
+        g.addTerm("Docker")
+        let outcome = await r.decide(candidates(unresolved: ["Docker"]))
+        #expect(CorrectionRegistrar.apply(outcome, to: &g) == nil)
+        #expect(outcome.locatorProblem == "OpenAI の応答が 0.05 秒を超えたため、登録できませんでした")
+    }
+
+    @Test func defaultLocatorTimeoutIsFiveSeconds() {
+        #expect(CorrectionRegistrar.defaultLocatorTimeout == .seconds(5))
     }
 }

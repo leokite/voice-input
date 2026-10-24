@@ -360,10 +360,11 @@ import VoiceInputCore
                 return
             }
             // AI を待つ間に用語集が変わることがあるので、判断が済んでから、その時点の用語集に足す。
-            let decisions = await CorrectionRegistrar(judge: self.judge, locator: self.makeLocator()).decide(candidates)
+            let outcome = await CorrectionRegistrar(judge: self.judge, locator: self.makeLocator()).decide(candidates)
             var updated = self.glossary
-            guard let registration = CorrectionRegistrar.apply(decisions, to: &updated) else {
-                self.showOverlayMessage(.notice("登録できる直しが見つかりませんでした"))
+            guard let registration = CorrectionRegistrar.apply(outcome, to: &updated) else {
+                // OpenAI に聞けなかったせいで登録できなかったときは、そのことを知らせる。
+                self.showOverlayMessage(.notice(outcome.locatorProblem ?? "登録できる直しが見つかりませんでした"))
                 return
             }
             self.updateGlossary(updated)
