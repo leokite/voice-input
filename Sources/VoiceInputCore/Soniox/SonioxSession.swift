@@ -62,9 +62,8 @@ public final class SonioxWebSocketSession: TranscriptionSession, @unchecked Send
         do {
             try await task.send(.string(String(decoding: data, as: UTF8.self)))
         } catch {
-            let mapped = mapClosure(error, task: task)
-            terminate(throwing: mapped)
-            throw mapped
+            // ストリームの終了は受信ループに任せる (サーバーの本当のエラーを優先するため)。
+            throw mapClosure(error, task: task)
         }
     }
 
@@ -81,10 +80,22 @@ public final class SonioxWebSocketSession: TranscriptionSession, @unchecked Send
             closedByUs = true
             return (self.task, urlSession)
         }
-        // 空のテキストフレームがストリーム終端の合図。
-        try? await task?.send(.string(""))
-        task?.cancel(with: .normalClosure, reason: nil)
+        // 送信を待つ前にストリームを終える (ハンドシェイク中でもハングさせない)。
         terminate(throwing: nil)
+        // 空のテキストフレームがストリーム終端の合図。待ち過ぎないよう 1 秒で打ち切る。
+        if let task {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { try? await task.send(.string("")) }
+                group.addTask {
+                    // 送信が 1 秒で終わらなければソケットを閉じ、保留中の送信を失敗させる。
+                    guard (try? await Task.sleep(for: .seconds(1))) != nil else { return }
+                    task.cancel(with: .goingAway, reason: nil)
+                }
+                await group.next()
+                group.cancelAll()
+            }
+            task.cancel(with: .normalClosure, reason: nil)
+        }
         session?.finishTasksAndInvalidate()
     }
 
@@ -95,9 +106,8 @@ public final class SonioxWebSocketSession: TranscriptionSession, @unchecked Send
         do {
             try await task.send(message)
         } catch {
-            let mapped = mapClosure(error, task: task)
-            terminate(throwing: mapped)
-            throw mapped
+            // 受信ループが本当のエラーでストリームを終えるので、ここでは終えない。
+            throw mapClosure(error, task: task)
         }
     }
 

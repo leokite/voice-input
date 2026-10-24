@@ -48,3 +48,18 @@ struct SonioxLiveTests {
         #expect(thrown as? SonioxError == .unauthenticated)
     }
 }
+
+@Suite("SonioxSessionLifecycle")
+struct SonioxSessionLifecycleTests {
+    @Test func finishDuringPendingConnectionEndsStreamPromptly() async throws {
+        // 到達不能なエンドポイントでも finish() がハングせず、ストリームが終わること。
+        let session = SonioxWebSocketSession(apiKey: "x", url: URL(string: "ws://10.255.255.1:81/")!)
+        let stream = session.responses
+        let started = ContinuousClock.now
+        Task { try? await session.start(config: SonioxConfig(languageHints: ["ja"], terms: [])) }
+        try await Task.sleep(for: .milliseconds(200))
+        await session.finish()
+        for try await _ in stream {}
+        #expect(ContinuousClock.now - started < .seconds(5))
+    }
+}
