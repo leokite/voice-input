@@ -1,4 +1,6 @@
 import AppKit
+import ApplicationServices
+import AVFoundation
 import VoiceInputCore
 
 /// 保存処理、SessionController、KeyStateMachine、GlobalKeyMonitor、OverlayPanel をつなぐ。
@@ -7,6 +9,8 @@ import VoiceInputCore
     @Published private(set) var settings: AppSettings
     @Published private(set) var glossary: Glossary
     @Published private(set) var history: History
+    /// 録音キーの設定中。true の間は tap が録音キーを無視する。
+    @Published private(set) var capturingKey = false
 
     private let settingsStore = JSONStore(url: AppPaths.supportDirectory.appendingPathComponent("settings.json"),
                                           defaultValue: AppSettings.default)
@@ -23,6 +27,9 @@ import VoiceInputCore
     private var sessionState: SessionState = .idle
     private var thresholdTask: Task<Void, Never>?
     private var permissionRetryTask: Task<Void, Never>?
+    private var permissionWatchTask: Task<Void, Never>?
+    /// 録音中などに設定が変わった。落ち着いたらキーの設定を作り直す。
+    private var keyRebuildPending = false
     private var overlayMessageTask: Task<Void, Never>?
     /// API キーがないまま押されたキー。確定したら警告を出す。
     private var pressWithoutKey = false
@@ -77,6 +84,31 @@ import VoiceInputCore
     func start() {
         keyMonitorRunning = keyMonitor.start()
         if !keyMonitorRunning { retryKeyMonitorUntilPermitted() }
+        watchAccessibilityRevocation()
+    }
+
+    /// 起動中にアクセシビリティの許可が外されたら、tap を捨てて許可待ちに戻る。
+    private func watchAccessibilityRevocation() {
+        permissionWatchTask?.cancel()
+        permissionWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { return }
+                if self.keyMonitorRunning, !AXIsProcessTrusted() {
+                    self.keyMonitor.stop()
+                    self.keyMonitorRunning = false
+                    self.abortKeyInteraction()
+                    self.retryKeyMonitorUntilPermitted()
+                }
+            }
+        }
+    }
+
+    /// 起動時に案内の画面を開くべきか。
+    var needsOnboarding: Bool {
+        let micOK = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        let keyOK = !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
+        return !micOK || !AXIsProcessTrusted() || !keyOK
     }
 
     func openAccessibilitySettings() {
@@ -98,6 +130,61 @@ import VoiceInputCore
                 }
             }
         }
+    }
+
+    // MARK: - Settings, glossary, history
+
+    func updateSettings(_ new: AppSettings) {
+        guard new != settings else { return }
+        settings = new
+        do { try settingsStore.save(new) } catch { NSLog("VoiceInput: settings.json を保存できません: \(error)") }
+        keyRebuildPending = true
+        rebuildKeysIfQuiet()
+    }
+
+    func updateGlossary(_ new: Glossary) {
+        glossary = new
+        do { try glossaryStore.save(new) } catch { NSLog("VoiceInput: glossary.json を保存できません: \(error)") }
+    }
+
+    func updateHistory(_ new: History) {
+        history = new
+        do { try historyStore.save(new) } catch { NSLog("VoiceInput: history.json を保存できません: \(error)") }
+    }
+
+    /// 録音キーの設定を始める。録音中や押下の途中なら先に終わらせ、tap が録音キーを無視するようにする。
+    func beginKeyCapture() {
+        abortKeyInteraction()
+        capturingKey = true
+        watchedKeys.value = []
+    }
+
+    func endKeyCapture() {
+        capturingKey = false
+        keyRebuildPending = true
+        rebuildKeysIfQuiet()
+    }
+
+    /// キーが落ち着いていれば（録音中でも、押下の途中でもなければ）、新しい設定でキーの状態機械と監視キーを作り直す。
+    private func rebuildKeysIfQuiet() {
+        guard keyRebuildPending, !capturingKey, activeMode == nil, !buffering, !pressWithoutKey else { return }
+        if case .recording = sessionState { return }
+        keyRebuildPending = false
+        thresholdTask?.cancel()
+        keyMachine = KeyStateMachine(toggleKey: settings.toggleKey, holdKey: settings.holdKey,
+                                     holdThreshold: settings.holdThreshold)
+        watchedKeys.value = [settings.toggleKey, settings.holdKey]
+    }
+
+    /// 録音と押下の途中を、種類を問わず終わらせて状態を戻す。
+    private func abortKeyInteraction() {
+        thresholdTask?.cancel()
+        if activeMode != nil { session.handle(.stop) }
+        if buffering { session.handle(.cancel) }
+        buffering = false
+        activeMode = nil
+        pressWithoutKey = false
+        keyMachine.reset()
     }
 
     // MARK: - Keys
@@ -148,6 +235,7 @@ import VoiceInputCore
             }
             session.handle(action)
         }
+        rebuildKeysIfQuiet()
     }
 
     private func scheduleThresholdTick() {
@@ -169,6 +257,7 @@ import VoiceInputCore
         overlayMessageTask?.cancel()
         overlay.show(state)
         if case .error = state { keyMachine.reset() }
+        rebuildKeysIfQuiet()
     }
 
     /// SessionController を通さない警告を 3 秒出す。その間にセッションが始まればそちらを優先する。
@@ -185,13 +274,15 @@ import VoiceInputCore
     // MARK: - Persistence
 
     private func addHistory(_ entry: HistoryEntry) {
-        history.add(entry, limit: settings.historyLimit)
-        do { try historyStore.save(history) } catch { NSLog("VoiceInput: history.json を保存できません: \(error)") }
+        var updated = history
+        updated.add(entry, limit: settings.historyLimit)
+        updateHistory(updated)
     }
 
     private func markTermsUsed(_ terms: Set<String>) {
-        glossary.markUsed(terms, at: Date())
-        do { try glossaryStore.save(glossary) } catch { NSLog("VoiceInput: glossary.json を保存できません: \(error)") }
+        var updated = glossary
+        updated.markUsed(terms, at: Date())
+        updateGlossary(updated)
     }
 }
 

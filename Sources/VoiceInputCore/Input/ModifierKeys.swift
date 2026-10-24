@@ -9,6 +9,10 @@ public enum ModifierKeys {
         KeyID.rightControl.keyCode: 0x2000,   // NX_DEVICERCTLKEYMASK
         KeyID.rightShift.keyCode: 0x04,       // NX_DEVICERSHIFTKEYMASK
         KeyID.function.keyCode: 0x800000,     // CGEventFlags.maskSecondaryFn
+        58: 0x20,                             // NX_DEVICELALTKEYMASK
+        55: 0x08,                             // NX_DEVICELCMDKEYMASK
+        59: 0x01,                             // NX_DEVICELCTLKEYMASK
+        56: 0x02,                             // NX_DEVICELSHIFTKEYMASK
     ]
 
     public static func isModifier(_ key: KeyID) -> Bool {

@@ -13,6 +13,7 @@ final class GlobalKeyMonitor: @unchecked Sendable {
     private let onDisabled: @Sendable () -> Void
     private let lock = NSLock()
     private var tap: CFMachPort?
+    private var runLoop: CFRunLoop?
 
     /// - Parameters:
     ///   - watched: 監視するキー。tap のスレッドから呼ぶので、スレッドセーフであること。
@@ -43,7 +44,8 @@ final class GlobalKeyMonitor: @unchecked Sendable {
         ) else { return false }
         self.tap = tap
         let port = UncheckedPort(port: tap)
-        let thread = Thread {
+        let thread = Thread { [weak self] in
+            self?.lock.withLock { self?.runLoop = CFRunLoopGetCurrent() }
             let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, port.port, 0)
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
             CGEvent.tapEnable(tap: port.port, enable: true)
@@ -53,6 +55,18 @@ final class GlobalKeyMonitor: @unchecked Sendable {
         thread.qualityOfService = .userInteractive
         thread.start()
         return true
+    }
+
+    /// tap を止めて捨てる。以後の `start()` は新しく作り直す。
+    func stop() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFMachPortInvalidate(tap)
+        if let runLoop { CFRunLoopStop(runLoop) }
+        self.tap = nil
+        runLoop = nil
     }
 
     /// イベントを握りつぶすなら false を返す。tap のスレッドで呼ばれる。

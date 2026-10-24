@@ -7,31 +7,34 @@ struct VoiceInputApp: App {
 
     var body: some Scene {
         MenuBarExtra("VoiceInput", systemImage: "mic") {
-            MenuContent(coordinator: appDelegate.coordinator)
+            MenuContent(coordinator: appDelegate.coordinator, windows: appDelegate.windows)
         }
     }
 }
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator = AppCoordinator()
+    lazy var windows = WindowPresenter(coordinator: coordinator)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         coordinator.start()
+        if coordinator.needsOnboarding { windows.open(.permissions) }
     }
 }
 
 private struct MenuContent: View {
     @ObservedObject var coordinator: AppCoordinator
+    let windows: WindowPresenter
 
     var body: some View {
         if !coordinator.keyMonitorRunning {
-            Button("アクセシビリティの許可が必要です") { coordinator.openAccessibilitySettings() }
+            Button("アクセシビリティの許可が必要です") { windows.open(.permissions) }
             Divider()
         }
-        // 中身は Task 12 で作る。
-        Button("履歴") {}.disabled(true)
-        Button("用語集") {}.disabled(true)
-        Button("設定") {}.disabled(true)
+        Button("履歴") { windows.open(.history) }
+        Button("用語集") { windows.open(.glossary) }
+        Button("設定") { windows.open(.settings) }
+        Button("権限") { windows.open(.permissions) }
         Divider()
         Button("終了") { NSApplication.shared.terminate(nil) }
     }
