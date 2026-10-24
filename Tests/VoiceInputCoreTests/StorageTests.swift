@@ -39,7 +39,7 @@ import Testing
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("nested/settings.json")
-        let store = JSONStore<AppSettings>(url: url, defaultValue: .default)
+        let store = JSONStore<AppSettings>(url: url, defaultValue: .default, log: { _ in })
         #expect(store.load() == .default)
         var s = AppSettings.default
         s.insertionMode = .realtime
@@ -48,6 +48,26 @@ import Testing
         #expect(store.load() == s)
         try Data("garbage{".utf8).write(to: url)
         #expect(store.load() == .default)
+    }
+
+    @Test func corruptFileIsSetAsideBeforeDefaultIsReturned() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("settings.json")
+        let garbage = Data("garbage{".utf8)
+        try garbage.write(to: url)
+        let store = JSONStore<AppSettings>(url: url, defaultValue: .default, log: { _ in })
+        #expect(store.load() == .default)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        #expect(names.count == 1)
+        let name = try #require(names.first)
+        #expect(name.wholeMatch(of: /settings\.corrupt-\d{8}-\d{6}\.json/) != nil)
+        #expect(try Data(contentsOf: dir.appendingPathComponent(name)) == garbage)
+        // 次の保存で壊れたファイルが上書きされることはない。
+        try store.save(.default)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: dir.path).count == 2)
     }
 
     @Test func keychainRoundTrip() throws {
