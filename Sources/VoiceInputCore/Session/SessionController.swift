@@ -26,11 +26,38 @@ public enum SessionState: Equatable, Sendable {
     case notice(String)
 }
 
+/// エラーの種類。アプリはこれを見て案内の画面を開く（表示の文字列では判断しない）。
+public enum SessionError: Equatable, Sendable {
+    case micUnavailable
+    case unauthenticated
+    case paymentRequired
+    case network
+
+    init(_ error: Error) {
+        switch error as? SonioxError {
+        case .unauthenticated: self = .unauthenticated
+        case .paymentRequired: self = .paymentRequired
+        default: self = .network
+        }
+    }
+
+    public var message: String {
+        switch self {
+        case .micUnavailable: "マイクを使用できません"
+        case .unauthenticated: "API キーが正しくありません"
+        case .paymentRequired: "Soniox の残高または予算が不足しています"
+        case .network: "ネットワークに接続できません"
+        }
+    }
+}
+
 /// KeyAction を受けて、録音、Soniox とのやり取り、文字の挿入、履歴への保存までを進める。
 @MainActor public final class SessionController {
     public var onStateChange: ((SessionState) -> Void)?
     /// 無音で自動停止したときに呼ぶ。呼ばれた側は KeyStateMachine の `reset()` を呼ぶ。
     public var onAutoStop: (() -> Void)?
+    /// エラーを表示するとき、1 回のエラーにつき 1 回呼ぶ。
+    public var onError: ((SessionError) -> Void)?
 
     private let audio: AudioSource
     private let sessions: TranscriptionSessionFactory
@@ -146,7 +173,7 @@ public enum SessionState: Equatable, Sendable {
         guard let r = recording, r.phase == .buffering else { return false }
         if r.micFailed {
             recording = nil
-            show(.error("マイクを使用できません"))
+            showError(.micUnavailable)
             return true
         }
         let settings = settings()
@@ -382,7 +409,7 @@ public enum SessionState: Equatable, Sendable {
         if !r.usedTerms.isEmpty { onTermsUsed(r.usedTerms) }
         recording = nil
         if let failure = r.failure {
-            show(.error(Self.message(for: failure)))
+            showError(SessionError(failure))
         } else if r.blocked == .appSwitched {
             show(.notice("アプリが切り替わったため履歴に保存しました"))
         } else if r.blocked == .secureInput {
@@ -394,20 +421,17 @@ public enum SessionState: Equatable, Sendable {
         }
     }
 
-    static func message(for error: Error) -> String {
-        switch error as? SonioxError {
-        case .unauthenticated: "API キーが正しくありません"
-        case .paymentRequired: "Soniox の残高または予算が不足しています"
-        default: "ネットワークに接続できません"
-        }
-    }
-
     // MARK: - State
 
     private func publishPreview(_ r: Recording) {
         guard r.phase == .recording, recording === r else { return }
         let preview = r.realtime ? r.pendingRaw + r.partial : ""
         setState(.recording(level: r.level, preview: preview))
+    }
+
+    private func showError(_ error: SessionError) {
+        show(.error(error.message))
+        onError?(error)
     }
 
     /// error と notice は 3 秒表示してから idle に戻す。

@@ -13,6 +13,7 @@ import Testing
     private(set) var history: [HistoryEntry] = []
     private(set) var termsUsed: [Set<String>] = []
     private(set) var autoStops = 0
+    private(set) var errors: [SessionError] = []
     private(set) var states: [SessionState] = [] {
         didSet { resumeStateWaiters() }
     }
@@ -36,6 +37,7 @@ import Testing
         )
         controller.onStateChange = { [unowned self] in self.states.append($0) }
         controller.onAutoStop = { [unowned self] in self.autoStops += 1 }
+        controller.onError = { [unowned self] in self.errors.append($0) }
     }
 
     var session: FakeSession { factory.sessions[factory.sessions.count - 1] }
@@ -193,6 +195,7 @@ struct SessionControllerTests {
         await h.controller.waitUntilIdle()
         #expect(h.factory.sessions.isEmpty)
         #expect(h.states == [.error("マイクを使用できません")])
+        #expect(h.errors == [.micUnavailable])
         await h.clock.waitForSleeper(.seconds(3))
         h.clock.advance(by: .seconds(3))
         await h.waitForState(.idle)
@@ -208,6 +211,7 @@ struct SessionControllerTests {
         h.controller.handle(.cancel)
         await h.controller.waitUntilIdle()
         #expect(h.states.isEmpty)
+        #expect(h.errors.isEmpty)
         #expect(h.factory.sessions.isEmpty)
     }
 
@@ -269,8 +273,26 @@ struct SessionControllerTests {
         h.session.fail(SonioxError.unauthenticated)
         await h.controller.waitUntilIdle()
         #expect(h.states.last == .error("API キーが正しくありません"))
+        #expect(h.errors == [.unauthenticated])
         #expect(h.history.isEmpty)
         #expect(h.session.log.last == "finish")
+    }
+
+    @Test func paymentRequiredReportsItsKind() async {
+        let h = Harness()
+        h.confirm()
+        h.session.fail(SonioxError.paymentRequired)
+        await h.controller.waitUntilIdle()
+        #expect(h.states.last == .error("Soniox の残高または予算が不足しています"))
+        #expect(h.errors == [.paymentRequired])
+    }
+
+    @Test func networkErrorReportsItsKind() async {
+        let h = Harness()
+        h.confirm()
+        h.session.fail(SonioxError.connectionClosed)
+        await h.controller.waitUntilIdle()
+        #expect(h.errors == [.network])
     }
 
     @Test func finTimeoutAfterFiveSeconds() async {
@@ -373,6 +395,7 @@ struct SessionControllerTests {
         #expect(h.termsUsed.isEmpty)
         #expect(!h.states.contains(.processing))
         #expect(h.states.last == .idle)
+        #expect(h.errors.isEmpty)
         // 次の録音はすぐ始められる。
         h.confirm()
         #expect(h.factory.sessions.count == 2)

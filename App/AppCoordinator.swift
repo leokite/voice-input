@@ -14,6 +14,8 @@ import VoiceInputCore
     @Published private(set) var capturingKey = false
     /// キーチェーンに API キーがあるか。画面から繰り返し読まないよう、保存と削除のときだけ更新する。
     @Published private(set) var hasAPIKey = false
+    /// 案内の画面を開く。AppDelegate が WindowPresenter につなぐ。
+    var openWindow: ((AppWindow) -> Void)?
 
     private let settingsStore = JSONStore(url: AppPaths.supportDirectory.appendingPathComponent("settings.json"),
                                           defaultValue: AppSettings.default)
@@ -61,6 +63,7 @@ import VoiceInputCore
         )
         session.onStateChange = { [unowned self] state in self.sessionStateChanged(state) }
         session.onAutoStop = { [unowned self] in self.keyMachine.reset() }
+        session.onError = { [unowned self] error in self.guide(for: error) }
 
         // コールバックは tap の専用スレッドで呼ばれる。時刻はその場で取り、処理はメインへ順番どおりに移す。
         keyMonitor = GlobalKeyMonitor(
@@ -102,10 +105,10 @@ import VoiceInputCore
         }
     }
 
-    /// 起動時に案内の画面を開くべきか。
-    var needsOnboarding: Bool {
+    /// 起動時に権限の画面を開くべきか（マイクかアクセシビリティの許可がない）。
+    var needsPermissions: Bool {
         let micOK = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        return !micOK || !AXIsProcessTrusted() || !hasAPIKey
+        return !micOK || !AXIsProcessTrusted()
     }
 
     func openAccessibilitySettings() {
@@ -198,6 +201,18 @@ import VoiceInputCore
         dispatch(keyMachine.handle(event, at: t))
     }
 
+    /// メニューの「録音の開始と停止」。切り替えモードのキーを短く押したのと同じ道を通す。
+    func toggleRecordingFromMenu() {
+        if gate.activeMode == .hold {
+            keyMachine.reset()
+            dispatch([.stop])
+            return
+        }
+        let t = ProcessInfo.processInfo.systemUptime
+        handle(.down(keyMachine.toggleKey), at: t)
+        handle(.up(keyMachine.toggleKey), at: t)
+    }
+
     /// tap が無効にされていた間のイベント（録音キーの up かもしれない）は失われている。
     /// 押し続けの録音が止まらなくなるのを防ぐため、押し続けの録音と確定前の押下を終わらせて状態を戻す。
     /// トグルの録音は続ける。KeyStateMachine はキーを失っても次の押下で止められる状態のままなので触らない。
@@ -238,6 +253,7 @@ import VoiceInputCore
         switch rejection {
         case .missingAPIKey:
             showOverlayMessage(.error("API キーが設定されていません"))
+            openWindow?(.settings)
         case .secureInput:
             showOverlayMessage(.notice("パスワード入力中は使えません"))
         case .busy:
@@ -264,6 +280,28 @@ import VoiceInputCore
         overlay.show(state)
         if case .error = state { keyMachine.reset() }
         rebuildKeysIfQuiet()
+    }
+
+    /// エラーが出たら、直し方の分かる場所を開く。SessionController はエラー 1 回につき 1 回だけ呼ぶ。
+    private func guide(for error: SessionError) {
+        switch error {
+        case .unauthenticated:
+            openWindow?(.settings)
+        case .paymentRequired:
+            if let url = URL(string: "https://console.soniox.com") { NSWorkspace.shared.open(url) }
+        case .micUnavailable:
+            switch AVCaptureDevice.authorizationStatus(for: .audio) {
+            case .notDetermined:
+                // 押しただけでは求めない。録音だと確定したここで初めて許可のダイアログを出す。
+                AVCaptureDevice.requestAccess(for: .audio) { _ in }
+            case .authorized:
+                break
+            default:
+                openWindow?(.permissions)
+            }
+        case .network:
+            break
+        }
     }
 
     /// SessionController を通さない警告を 3 秒出す。その間にセッションが始まればそちらを優先する。

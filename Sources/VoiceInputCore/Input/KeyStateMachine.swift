@@ -43,8 +43,8 @@ public struct KeyStateMachine: Sendable {
         case holdRecording
     }
 
-    private let toggleKey: KeyID
-    private let holdKey: KeyID
+    public let toggleKey: KeyID
+    public let holdKey: KeyID
     private let holdThreshold: TimeInterval
     private var state: State = .idle
 
