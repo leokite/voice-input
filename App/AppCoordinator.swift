@@ -14,6 +14,8 @@ import VoiceInputCore
     @Published private(set) var capturingKey = false
     /// キーチェーンに API キーがあるか。画面から繰り返し読まないよう、保存と削除のときだけ更新する。
     @Published private(set) var hasAPIKey = false
+    /// 端末内AIを使えるか。使えないときは置き換えを登録せず、認識のヒントだけを登録する。
+    @Published private(set) var judgeAvailability: JudgeAvailability
     /// 案内の画面を開く。AppDelegate が WindowPresenter につなぐ。
     var openWindow: ((AppWindow) -> Void)?
 
@@ -40,6 +42,14 @@ import VoiceInputCore
     private var gate = RecordingGate()
     /// tap のスレッドから読む録音キー。
     private let watchedKeys: LockedValue<Set<KeyID>>
+    /// tap のスレッドから読む、用語集に登録するキー。キーの設定中は nil。
+    private let glossaryShortcut: LockedValue<Shortcut?>
+    private let judge: CorrectionJudge?
+    private let copier = SelectionCopier()
+    /// 直前の登録と、その時刻。3 秒以内にもう一度キーを押すと取り消す。
+    private var lastRegistration: (registration: Registration, at: Date)?
+    /// 登録の処理中（選択の読み取りや AI の判断を待っている）。その間のキーは無視する。
+    private var registering = false
 
     init() {
         let settings = settingsStore.load()
@@ -48,6 +58,8 @@ import VoiceInputCore
         hasAPIKey = !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
         history = historyStore.load()
         watchedKeys = LockedValue([settings.toggleKey, settings.holdKey])
+        glossaryShortcut = LockedValue(settings.glossaryShortcut)
+        (judge, judgeAvailability) = OnDeviceJudge.make()
         keyMachine = KeyStateMachine(toggleKey: settings.toggleKey, holdKey: settings.holdKey,
                                      holdThreshold: settings.holdThreshold)
 
@@ -68,10 +80,16 @@ import VoiceInputCore
         // コールバックは tap の専用スレッドで呼ばれる。時刻はその場で取り、処理はメインへ順番どおりに移す。
         keyMonitor = GlobalKeyMonitor(
             watched: { [watchedKeys] in watchedKeys.value },
+            shortcut: { [glossaryShortcut] in glossaryShortcut.value },
             onEvent: { [weak self] event in
                 let t = ProcessInfo.processInfo.systemUptime
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated { self?.handle(event, at: t) }
+                }
+            },
+            onShortcut: { [weak self] in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.handleGlossaryShortcut() }
                 }
             },
             onDisabled: { [weak self] in
@@ -167,6 +185,7 @@ import VoiceInputCore
         abortKeyInteraction()
         capturingKey = true
         watchedKeys.value = []
+        glossaryShortcut.value = nil
     }
 
     func endKeyCapture() {
@@ -184,6 +203,7 @@ import VoiceInputCore
         keyMachine = KeyStateMachine(toggleKey: settings.toggleKey, holdKey: settings.holdKey,
                                      holdThreshold: settings.holdThreshold)
         watchedKeys.value = [settings.toggleKey, settings.holdKey]
+        glossaryShortcut.value = settings.glossaryShortcut
     }
 
     /// 録音と押下の途中を、種類を問わず終わらせて状態を戻す。
@@ -273,6 +293,59 @@ import VoiceInputCore
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
             self.dispatch(self.keyMachine.tick(at: ProcessInfo.processInfo.systemUptime))
+        }
+    }
+
+    // MARK: - Glossary shortcut
+
+    /// 用語集に登録するキーが押された。直した部分の選択を読み、直前の音声入力と比べて登録する。
+    func handleGlossaryShortcut() {
+        if let last = lastRegistration, Date().timeIntervalSince(last.at) <= 3 {
+            var updated = glossary
+            CorrectionRegistrar.undo(last.registration, in: &updated)
+            updateGlossary(updated)
+            lastRegistration = nil
+            showOverlayMessage(.notice("登録を取り消しました"))
+            return
+        }
+        guard !registering else { return }
+        switch sessionState {
+        case .recording, .processing:
+            showOverlayMessage(.notice("処理中です"))
+            return
+        case .idle, .error, .notice:
+            break
+        }
+        if IsSecureEventInputEnabled() {
+            showOverlayMessage(.notice("パスワード入力中は使えません"))
+            return
+        }
+        registering = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.registering = false }
+            guard let selection = await SelectedText.read(copier: self.copier) else {
+                self.showOverlayMessage(.notice("文字を選んでからキーを押してください"))
+                return
+            }
+            guard selection.count <= 200 else {
+                self.showOverlayMessage(.notice("選んだ範囲が長すぎます"))
+                return
+            }
+            guard let candidates = CorrectionMatcher.match(selection: selection, history: self.history.entries,
+                                                           now: Date()) else {
+                self.showOverlayMessage(.notice("登録できる直しが見つかりませんでした"))
+                return
+            }
+            var updated = self.glossary
+            guard let registration = await CorrectionRegistrar(judge: self.judge)
+                .register(candidates, into: &updated) else {
+                self.showOverlayMessage(.notice("登録できる直しが見つかりませんでした"))
+                return
+            }
+            self.updateGlossary(updated)
+            self.lastRegistration = (registration, Date())
+            self.showOverlayMessage(.notice(registration.message))
         }
     }
 
