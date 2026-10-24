@@ -85,7 +85,8 @@ public struct KeyStateMachine: Sendable {
             if key == pressedKey { return [] } // autorepeat
             return chorded ? [] : chord()
         case .toggleRecording(let pressedAgain, _):
-            if key == toggleKey && !pressedAgain {
+            if pressedAgain && key == toggleKey { return [] } // autorepeat
+            if key == toggleKey {
                 state = .toggleRecording(pressedAgain: true, chorded: false)
             } else if pressedAgain {
                 state = .toggleRecording(pressedAgain: true, chorded: true)

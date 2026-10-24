@@ -117,4 +117,22 @@ import Testing
         m.reset()
         #expect(m.handle(.down(.rightOption), at: 1.0) == [.beginBuffering])
     }
+
+    @Test func autorepeatOnSecondToggleTapStillStops() {
+        var m = sameKey()
+        _ = m.handle(.down(.rightOption), at: 0.0)
+        _ = m.handle(.up(.rightOption), at: 0.1)
+        #expect(m.handle(.down(.rightOption), at: 1.0) == [])
+        #expect(m.handle(.down(.rightOption), at: 1.05) == [])
+        #expect(m.handle(.up(.rightOption), at: 1.1) == [.stop])
+    }
+
+    @Test func autorepeatOnSecondToggleTapStillStopsSeparateKeys() {
+        var m = KeyStateMachine(toggleKey: .rightOption, holdKey: .rightCommand)
+        _ = m.handle(.down(.rightOption), at: 0.0)
+        _ = m.handle(.up(.rightOption), at: 0.1)
+        #expect(m.handle(.down(.rightOption), at: 1.0) == [])
+        #expect(m.handle(.down(.rightOption), at: 1.05) == [])
+        #expect(m.handle(.up(.rightOption), at: 1.1) == [.stop])
+    }
 }
