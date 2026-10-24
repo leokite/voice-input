@@ -45,7 +45,7 @@ enum AppWindow: String, CaseIterable {
         case .settings: AnyView(SettingsView(coordinator: coordinator))
         case .glossary: AnyView(GlossaryView(coordinator: coordinator))
         case .history: AnyView(HistoryView(coordinator: coordinator))
-        case .permissions: AnyView(PermissionsView(coordinator: coordinator))
+        case .permissions: AnyView(PermissionsView(coordinator: coordinator, openSettings: { [weak self] in self?.open(.settings) }))
         }
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: kind.size),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -55,6 +55,14 @@ enum AppWindow: String, CaseIterable {
         window.contentViewController = NSHostingController(rootView: content)
         window.setContentSize(kind.size)
         window.center()
+        // 閉じたら中身を捨てる。画面ごとのタイマーなどが裏で動き続けないようにする。
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window,
+                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.windows[kind]?.contentViewController = nil
+                self?.windows[kind] = nil
+            }
+        }
         return window
     }
 }

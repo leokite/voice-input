@@ -11,6 +11,8 @@ import VoiceInputCore
     @Published private(set) var history: History
     /// 録音キーの設定中。true の間は tap が録音キーを無視する。
     @Published private(set) var capturingKey = false
+    /// キーチェーンに API キーがあるか。画面から繰り返し読まないよう、保存と削除のときだけ更新する。
+    @Published private(set) var hasAPIKey = false
 
     private let settingsStore = JSONStore(url: AppPaths.supportDirectory.appendingPathComponent("settings.json"),
                                           defaultValue: AppSettings.default)
@@ -46,6 +48,7 @@ import VoiceInputCore
         let settings = settingsStore.load()
         self.settings = settings
         glossary = glossaryStore.load()
+        hasAPIKey = !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
         history = historyStore.load()
         watchedKeys = LockedValue([settings.toggleKey, settings.holdKey])
         keyMachine = KeyStateMachine(toggleKey: settings.toggleKey, holdKey: settings.holdKey,
@@ -107,8 +110,7 @@ import VoiceInputCore
     /// 起動時に案内の画面を開くべきか。
     var needsOnboarding: Bool {
         let micOK = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        let keyOK = !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
-        return !micOK || !AXIsProcessTrusted() || !keyOK
+        return !micOK || !AXIsProcessTrusted() || !hasAPIKey
     }
 
     func openAccessibilitySettings() {
@@ -140,6 +142,16 @@ import VoiceInputCore
         do { try settingsStore.save(new) } catch { NSLog("VoiceInput: settings.json を保存できません: \(error)") }
         keyRebuildPending = true
         rebuildKeysIfQuiet()
+    }
+
+    func saveAPIKey(_ key: String) throws {
+        try KeychainStore.saveAPIKey(key)
+        hasAPIKey = true
+    }
+
+    func deleteAPIKey() {
+        KeychainStore.deleteAPIKey()
+        hasAPIKey = false
     }
 
     func updateGlossary(_ new: Glossary) {

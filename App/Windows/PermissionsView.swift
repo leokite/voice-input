@@ -6,9 +6,9 @@ import VoiceInputCore
 
 struct PermissionsView: View {
     @ObservedObject var coordinator: AppCoordinator
+    let openSettings: () -> Void
     @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @State private var accessibility = AXIsProcessTrusted()
-    @State private var hasAPIKey = Self.apiKeyExists()
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -38,9 +38,9 @@ struct PermissionsView: View {
                 }
             }
             Section("API キー") {
-                row(ok: hasAPIKey, okText: "設定されています", ngText: "設定されていません")
-                if !hasAPIKey {
-                    Button("設定を開く") { (NSApp.delegate as? AppDelegate)?.windows.open(.settings) }
+                row(ok: coordinator.hasAPIKey, okText: "設定されています", ngText: "設定されていません")
+                if !coordinator.hasAPIKey {
+                    Button("設定を開く", action: openSettings)
                 }
             }
         }
@@ -58,11 +58,6 @@ struct PermissionsView: View {
     private func refresh() {
         micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         accessibility = AXIsProcessTrusted()
-        hasAPIKey = Self.apiKeyExists()
-    }
-
-    private static func apiKeyExists() -> Bool {
-        !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
     }
 
     private func open(_ url: String) {

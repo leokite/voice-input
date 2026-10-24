@@ -24,17 +24,20 @@ struct GlossaryView: View {
             Text("用語").font(.headline)
             header(["用語", "最後に使った日"])
             List {
-                ForEach(glossary.terms.indices, id: \.self) { i in
-                    HStack {
-                        TextField("用語", text: glossary.terms[i].text)
-                        lastUsed(glossary.wrappedValue.terms[i].lastUsed)
-                        Button(role: .destructive) {
-                            var g = coordinator.glossary
-                            g.terms.remove(at: i)
-                            coordinator.updateGlossary(g)
-                        } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless)
-                    }
+                ForEach(coordinator.glossary.terms, id: \.text) { term in
+                    TermRow(term: term,
+                            rename: { newText in
+                                var g = coordinator.glossary
+                                guard let i = g.terms.firstIndex(where: { $0.text == term.text }) else { return }
+                                g.terms[i].text = newText
+                                coordinator.updateGlossary(g)
+                            },
+                            delete: {
+                                var g = coordinator.glossary
+                                g.terms.removeAll { $0.text == term.text }
+                                coordinator.updateGlossary(g)
+                            },
+                            lastUsed: lastUsed)
                 }
             }
             HStack {
@@ -107,5 +110,38 @@ struct GlossaryView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .frame(width: 90, alignment: .trailing)
+    }
+}
+
+/// 用語 1 件。入力中は手元の下書きを直し、Return か入力欄を離れたときに確定する。
+private struct TermRow<LastUsed: View>: View {
+    let term: Term
+    let rename: (String) -> Void
+    let delete: () -> Void
+    let lastUsed: (Date?) -> LastUsed
+    @State private var draft: String
+
+    init(term: Term, rename: @escaping (String) -> Void, delete: @escaping () -> Void,
+         lastUsed: @escaping (Date?) -> LastUsed) {
+        self.term = term
+        self.rename = rename
+        self.delete = delete
+        self.lastUsed = lastUsed
+        _draft = State(initialValue: term.text)
+    }
+
+    var body: some View {
+        HStack {
+            TextField("用語", text: $draft).onSubmit(commit)
+            lastUsed(term.lastUsed)
+            Button(role: .destructive, action: delete) { Image(systemName: "trash") }
+                .buttonStyle(.borderless)
+        }
+        .onDisappear(perform: commit)
+    }
+
+    private func commit() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { draft = term.text } else if text != term.text { rename(text) }
     }
 }

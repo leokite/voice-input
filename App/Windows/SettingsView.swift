@@ -6,7 +6,6 @@ import VoiceInputCore
 struct SettingsView: View {
     @ObservedObject var coordinator: AppCoordinator
     @State private var apiKeyInput = ""
-    @State private var hasAPIKey = !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
     @State private var apiKeyError: String?
     @State private var languageText = ""
     @State private var newFiller = ""
@@ -29,12 +28,11 @@ struct SettingsView: View {
                     Button("保存") { saveKey() }
                         .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("削除", role: .destructive) {
-                        KeychainStore.deleteAPIKey()
-                        hasAPIKey = false
+                        coordinator.deleteAPIKey()
                         apiKeyInput = ""
                     }
-                    .disabled(!hasAPIKey)
-                    if hasAPIKey { Text("保存済み").foregroundStyle(.secondary) }
+                    .disabled(!coordinator.hasAPIKey)
+                    if coordinator.hasAPIKey { Text("保存済み").foregroundStyle(.secondary) }
                 }
                 if let apiKeyError { Text(apiKeyError).foregroundStyle(.red) }
             }
@@ -143,8 +141,7 @@ struct SettingsView: View {
     private func saveKey() {
         let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            try KeychainStore.saveAPIKey(key)
-            hasAPIKey = true
+            try coordinator.saveAPIKey(key)
             apiKeyError = nil
             apiKeyInput = ""
         } catch {
@@ -170,6 +167,18 @@ private struct KeyRecorderRow: View {
             }
         }
         .onDisappear { if recording { stop() } }
+        // 別のアプリに移る、ウインドウが閉じるなどで入力を受けられなくなったら、設定を終えて録音キーを戻す。
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            if recording { stop() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
+            if recording { stop() }
+        }
+        .task(id: recording) {
+            guard recording else { return }
+            try? await Task.sleep(for: .seconds(10))
+            if !Task.isCancelled, recording { stop() }
+        }
     }
 
     private func start() {
