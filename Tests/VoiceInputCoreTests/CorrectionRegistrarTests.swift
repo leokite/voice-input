@@ -120,4 +120,44 @@ private struct FakeJudge: CorrectionJudge {
         CorrectionRegistrar.undo(r, in: &g)
         #expect(g == .empty)
     }
+
+    // 最終レビューの指摘（C1）: 2 文字以下の置き換え元は、別の文の一部を書き換えるので置き換えにしない。
+    @Test func shortSourceRegistersHintOnly() async throws {
+        var g = Glossary.empty
+        _ = await registrar(FakeJudge()).register(
+            candidates(pairs: [CorrectionPair(from: "リア", to: "React")]), into: &g)
+        #expect(g.replacements.isEmpty)
+        #expect(g.terms.map(\.text) == ["React"])
+    }
+
+    // 最終レビューの指摘（I5）: 表示には、実際に足したものだけを数える。
+    @Test func messageCountsOnlyAddedEntries() async throws {
+        var g = Glossary.empty
+        g.addTerm("Docker")
+        let r = try #require(await registrar(nil).register(
+            candidates(pairs: [CorrectionPair(from: "どうか", to: "Docker"),
+                               CorrectionPair(from: "ぎっとはぶ", to: "GitHub")]), into: &g))
+        #expect(r.message == "GitHub を登録しました")
+    }
+
+    // 最終レビューの指摘（I6）: AI を待つ間に変わった用語集にも、判断の結果を正しく足せる。
+    @Test func decisionsApplyToGlossaryChangedDuringWait() async throws {
+        let decisions = await registrar(FakeJudge()).decide(
+            candidates(pairs: [CorrectionPair(from: "キューバーニーツ", to: "Kubernetes")]))
+        var g = Glossary.empty
+        g.addTerm("Swift")
+        let r = try #require(CorrectionRegistrar.apply(decisions, to: &g))
+        #expect(g.terms.map(\.text) == ["Swift", "Kubernetes"])
+        #expect(r.addedTerms == ["Kubernetes"])
+    }
+
+    // 最終レビューの指摘（I7）: ひらがなだけ、1 文字、漢字と英字の混ざった語はヒントにしない。
+    @Test func junkHintsAreDropped() async {
+        var g = Glossary.empty
+        let r = await registrar(nil).register(
+            candidates(pairs: [CorrectionPair(from: "してから", to: "しました")],
+                       unresolved: ["ました", "X", "明日Docker"]), into: &g)
+        #expect(r == nil)
+        #expect(g == .empty)
+    }
 }

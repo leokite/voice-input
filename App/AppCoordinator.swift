@@ -45,7 +45,9 @@ import VoiceInputCore
     /// tap のスレッドから読む、用語集に登録するキー。キーの設定中は nil。
     private let glossaryShortcut: LockedValue<Shortcut?>
     private let judge: CorrectionJudge?
-    private let copier = SelectionCopier()
+    private let inserter = PasteboardInserter()
+    /// 文字を入れた直後に押された場合は、入れる前のユーザーのクリップボードに戻す。
+    private lazy var copier = SelectionCopier(pendingOriginal: { [inserter] in inserter.pendingOriginal() })
     /// 直前の登録と、その時刻。3 秒以内にもう一度キーを押すと取り消す。
     private var lastRegistration: (registration: Registration, at: Date)?
     /// 登録の処理中（選択の読み取りや AI の判断を待っている）。その間のキーは無視する。
@@ -66,7 +68,7 @@ import VoiceInputCore
         session = SessionController(
             audio: AudioCapture(),
             sessions: KeychainSessionFactory(),
-            inserter: PasteboardInserter(),
+            inserter: inserter,
             frontmost: FrontmostApp(),
             settings: { [unowned self] in self.settings },
             glossary: { [unowned self] in self.glossary },
@@ -337,9 +339,10 @@ import VoiceInputCore
                 self.showOverlayMessage(.notice("登録できる直しが見つかりませんでした"))
                 return
             }
+            // AI を待つ間に用語集が変わることがあるので、判断が済んでから、その時点の用語集に足す。
+            let decisions = await CorrectionRegistrar(judge: self.judge).decide(candidates)
             var updated = self.glossary
-            guard let registration = await CorrectionRegistrar(judge: self.judge)
-                .register(candidates, into: &updated) else {
+            guard let registration = CorrectionRegistrar.apply(decisions, to: &updated) else {
                 self.showOverlayMessage(.notice("登録できる直しが見つかりませんでした"))
                 return
             }

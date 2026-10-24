@@ -99,7 +99,11 @@ final class GlobalKeyMonitor: @unchecked Sendable {
             return true
         case .keyDown where shortcut()?.matches(keyCode: keyCode, cgFlags: flags) == true:
             lock.withLock { swallowedShortcutKey = keyCode }
-            if !autorepeat { onShortcut() }
+            if !autorepeat {
+                // 録音キー（右 ⌥ など）を押したままの組み合わせなら、録音を始めないよう同時押しとして知らせる。
+                onEvent(.otherKeyDown)
+                onShortcut()
+            }
             return false
         case .keyUp where lock.withLock({ swallowedShortcutKey == keyCode }):
             lock.withLock { swallowedShortcutKey = nil }

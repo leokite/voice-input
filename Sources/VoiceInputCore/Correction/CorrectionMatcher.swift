@@ -32,13 +32,16 @@ public struct CorrectionCandidates: Equatable, Sendable {
 /// ユーザーが選んだ文字列と最近の音声入力の履歴を比べて、直した箇所を取り出す。
 public enum CorrectionMatcher {
     static let similarityThreshold = 0.4
+    /// 共通の文字が、これだけ続けて一致していれば、全体の割合が低くても前後を含めた選択とみなす
+    /// （「Reactで作る」のように、直した語が長く、前後が短い選択のため）。
+    static let minAnchorRun = 3
     static let maxEdits = 3
     static let maxEditLength = 30
     static let maxWordLength = 30
 
     public static func match(selection: String, history: [HistoryEntry], now: Date,
                              maxEntries: Int = 5, window: TimeInterval = 600) -> CorrectionCandidates? {
-        let trimmed = selection.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = selection.trimmingCharacters(in: Self.edgeJunk)
         guard !trimmed.isEmpty else { return nil }
         let entries = history
             .filter { now.timeIntervalSince($0.date) <= window }
@@ -52,10 +55,11 @@ public enum CorrectionMatcher {
         for entry in entries {
             let table = LCSTable(Array(entry.text), sel)
             let ratio = Double(table.length) / Double(sel.count)
+            guard ratio >= similarityThreshold || table.longestRun() >= minAnchorRun else { continue }
             if best == nil || ratio > best!.ratio { best = (entry, ratio, table) }
         }
 
-        if let best, best.ratio >= similarityThreshold {
+        if let best {
             let (pairs, unresolved) = edits(best.table)
             let count = pairs.count + unresolved.count
             let tooLong = pairs.contains { $0.from.count > maxEditLength || $0.to.count > maxEditLength }
@@ -69,6 +73,9 @@ public enum CorrectionMatcher {
         return CorrectionCandidates(entryID: newest.id, sentence: newest.text, pairs: [], unresolved: [trimmed])
     }
 
+    /// 端から落とす空白と句読点。
+    static let edgeJunk = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters)
+
     /// 対応をたどって差分を取り出す。両側が一致に挟まれた差分は組み合わせにする。
     /// 選択の端の差分は、読みの近い置き換え元が見つかれば組み合わせに、見つからなければ未解決にする。
     /// 空白だけの一致を挟んだ差分は 1 つにまとめる（"CI" → "GitHub Actions" のような語の直しを分けないため）。
@@ -79,7 +86,7 @@ public enum CorrectionMatcher {
         var unresolved: [String] = []
         var edgePairs: [CorrectionPair] = []
         // 選択の端の直しは、履歴でその手前（後ろ）にある部分から、読みが近いものを置き換え元にする。
-        let leading = String(t.b[0..<first.j]).trimmingCharacters(in: .whitespaces)
+        let leading = String(t.b[0..<first.j]).trimmingCharacters(in: edgeJunk)
         if !leading.isEmpty {
             if let source = Phonetic.bestSuffix(of: String(t.a[0..<first.i]), soundingLike: leading) {
                 edgePairs.append(CorrectionPair(from: source, to: leading))
@@ -114,11 +121,11 @@ public enum CorrectionMatcher {
             }
         }
         let pairs = merged.map {
-            CorrectionPair(from: $0.from.trimmingCharacters(in: .whitespaces),
-                           to: $0.to.trimmingCharacters(in: .whitespaces))
+            CorrectionPair(from: $0.from.trimmingCharacters(in: edgeJunk),
+                           to: $0.to.trimmingCharacters(in: edgeJunk))
         }
 
-        let trailing = String(t.b[(last.j + 1)...]).trimmingCharacters(in: .whitespaces)
+        let trailing = String(t.b[(last.j + 1)...]).trimmingCharacters(in: edgeJunk)
         if !trailing.isEmpty {
             if let source = Phonetic.bestPrefix(of: String(t.a[(last.i + 1)...]), soundingLike: trailing) {
                 edgePairs.append(CorrectionPair(from: source, to: trailing))
@@ -149,6 +156,18 @@ struct LCSTable {
     }
 
     var length: Int { dp[0][0] }
+
+    /// 対応の中で、両側で続けて一致している文字の最長の長さ。
+    func longestRun() -> Int {
+        var longest = 0, current = 0
+        var previous: (i: Int, j: Int)?
+        for m in alignment() {
+            if let p = previous, m.i == p.i + 1, m.j == p.j + 1 { current += 1 } else { current = 1 }
+            longest = max(longest, current)
+            previous = m
+        }
+        return longest
+    }
 
     /// 一致した文字の位置（a の i、b の j）を前から順に返す。
     func alignment() -> [(i: Int, j: Int)] {

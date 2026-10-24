@@ -87,4 +87,31 @@ import Testing
         let c = try #require(CorrectionMatcher.match(selection: "この PR を marge して", history: [e], now: now))
         #expect(c.pairs == [CorrectionPair(from: "e", to: "a")])
     }
+
+    // 最終レビューの指摘（C1）: 語の境目をまたぐ断片を置き換え元にしない。
+    @Test func soundAlikeSourceRespectsWordBoundaries() throws {
+        let e = entry("これはリアでアプリを作ります。")
+        let c = try #require(CorrectionMatcher.match(selection: "Reactでアプリを作り", history: [e], now: now))
+        #expect(!c.pairs.contains { $0.from.contains("は") })
+        let figma = try #require(CorrectionMatcher.match(
+            selection: "Figmaのデザイン", history: [entry("今日はぐまのデザインを見ます。")], now: now))
+        #expect(!figma.pairs.contains { $0.from.contains("は") })
+    }
+
+    // 最終レビューの指摘（I2）: 前後が短い選択も、前後を含めた選択として扱う。
+    @Test func shortContextSelectionUsesContextPath() throws {
+        let c = try #require(CorrectionMatcher.match(
+            selection: "Reactで作る", history: [entry("リアクトで作るアプリです。")], now: now))
+        #expect(c.pairs == [CorrectionPair(from: "リアクト", to: "React")])
+        let k = try #require(CorrectionMatcher.match(
+            selection: "Kubernetesのクラスタ", history: [entry("あのキューバーニーツのクラスタを確認します。")], now: now))
+        #expect(k.pairs == [CorrectionPair(from: "キューバーニーツ", to: "Kubernetes")])
+    }
+
+    // 最終レビューの指摘（I7）: 端の句読点を落とす。
+    @Test func trimsPunctuationAtSelectionEdges() throws {
+        let c = try #require(CorrectionMatcher.match(
+            selection: "、Dockerコンテナを再起動", history: [entry("どうかコンテナを再起動してから")], now: now))
+        #expect(c.pairs == [CorrectionPair(from: "どうか", to: "Docker")])
+    }
 }

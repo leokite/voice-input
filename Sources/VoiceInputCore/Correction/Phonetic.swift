@@ -50,26 +50,55 @@ public enum Phonetic {
         return Double(editDistance(x, y)) / Double(max(x.count, y.count))
     }
 
+    /// 語の区切りに使う助詞。候補の端がこれだと、語の途中から切り出したことになる。
+    private static let particles: Set<String> = ["は", "が", "を", "の", "に", "で", "と", "へ", "も", "や"]
+
     /// context の末尾の部分のうち、word と読みがいちばん近いもの。maxDistance より遠ければ nil。
+    /// 候補は語の区切りから始まるものだけにし、助詞から始まるものは除く（「これはリア」の「れはリア」などを選ばない）。
     public static func bestSuffix(of context: String, soundingLike word: String) -> String? {
         let chars = Array(context)
-        let candidates = (1...max(1, min(chars.count, word.count * 2 + 4))).compactMap { k -> String? in
-            guard k <= chars.count else { return nil }
-            let piece = chars[(chars.count - k)...]
-            guard let first = piece.first, !nonInitial.contains(first) else { return nil }
-            return String(piece)
+        let tokens = wordTokens(context)
+        let candidates = tokens.indices.compactMap { index -> String? in
+            let start = tokens[index].lowerBound
+            guard chars.count - start <= word.count * 2 + 4 else { return nil }
+            let first = String(chars[tokens[index]])
+            guard !particles.contains(first), let head = chars[start...].first, !nonInitial.contains(head) else {
+                return nil
+            }
+            return String(chars[start...])
         }
         return best(candidates, word)
     }
 
     /// context の先頭の部分のうち、word と読みがいちばん近いもの。maxDistance より遠ければ nil。
+    /// 候補は語の区切りで終わるものだけにし、助詞で終わるものは除く。
     public static func bestPrefix(of context: String, soundingLike word: String) -> String? {
         let chars = Array(context)
-        guard let first = chars.first, !nonInitial.contains(first) else { return nil }
-        let candidates = (1...max(1, min(chars.count, word.count * 2 + 4))).compactMap { k -> String? in
-            k <= chars.count ? String(chars[..<k]) : nil
+        guard let head = chars.first, !nonInitial.contains(head) else { return nil }
+        let tokens = wordTokens(context)
+        let candidates = tokens.indices.compactMap { index -> String? in
+            let end = tokens[index].upperBound
+            guard end <= word.count * 2 + 4 else { return nil }
+            guard !particles.contains(String(chars[tokens[index]])) else { return nil }
+            return String(chars[..<end])
         }
         return best(candidates, word)
+    }
+
+    /// 語の区切り（文字の位置の範囲）。
+    static func wordTokens(_ s: String) -> [Range<Int>] {
+        let cf = s as CFString
+        let tokenizer = CFStringTokenizerCreate(nil, cf, CFRange(location: 0, length: CFStringGetLength(cf)),
+                                                kCFStringTokenizerUnitWord, Locale(identifier: "ja") as CFLocale)
+        var result: [Range<Int>] = []
+        while CFStringTokenizerAdvanceToNextToken(tokenizer) != [] {
+            let r = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+            let lower = String.Index(utf16Offset: r.location, in: s)
+            let upper = String.Index(utf16Offset: r.location + r.length, in: s)
+            let start = s.distance(from: s.startIndex, to: lower)
+            result.append(start..<(start + s.distance(from: lower, to: upper)))
+        }
+        return result
     }
 
     private static func best(_ candidates: [String], _ word: String) -> String? {

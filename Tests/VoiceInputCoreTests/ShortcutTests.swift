@@ -32,4 +32,11 @@ import Testing
         let s = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"insertionMode":"batch"}"#.utf8))
         #expect(s.glossaryShortcut == .glossaryDefault)
     }
+
+    // ⇧ や ⌘ だけの組み合わせは、普段の入力（大文字や ⌘C）を握りつぶすので選べない。
+    @Test func requiresControlOrOption() {
+        #expect(!Shortcut.isAllowed(Shortcut(modifiers: [.shift], keyCode: 0, keyLabel: "A"), recordKeys: []))
+        #expect(!Shortcut.isAllowed(Shortcut(modifiers: [.command], keyCode: 8, keyLabel: "C"), recordKeys: []))
+        #expect(Shortcut.isAllowed(Shortcut(modifiers: [.option, .command], keyCode: 2, keyLabel: "D"), recordKeys: []))
+    }
 }

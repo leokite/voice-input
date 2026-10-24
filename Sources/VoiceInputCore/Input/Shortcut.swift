@@ -53,9 +53,10 @@ public struct Shortcut: Codable, Hashable, Sendable {
         keyCode == self.keyCode && ShortcutModifiers(cgFlags: cgFlags) == modifiers
     }
 
-    /// 修飾キーを 1 つ以上含み、普通のキーで、録音キーと keyCode が重ならないこと。
+    /// ⌃ か ⌥ を含み、普通のキーで、録音キーと keyCode が重ならないこと。
+    /// ⇧ や ⌘ だけの組み合わせは、大文字や ⌘C などの普段の入力をどのアプリでも握りつぶすので選べない。
     public static func isAllowed(_ s: Shortcut, recordKeys: [KeyID]) -> Bool {
-        !s.modifiers.isEmpty
+        !s.modifiers.isDisjoint(with: [.control, .option])
             && !ModifierKeys.isModifier(KeyID(keyCode: s.keyCode))
             && !recordKeys.contains { $0.keyCode == s.keyCode }
     }

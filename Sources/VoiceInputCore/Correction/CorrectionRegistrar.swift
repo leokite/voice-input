@@ -26,43 +26,70 @@ public struct CorrectionRegistrar: Sendable {
         self.sleep = sleep
     }
 
-    /// 登録するものがなければ nil。
-    public func register(_ c: CorrectionCandidates, into glossary: inout Glossary) async -> Registration? {
-        // 置き換え元が決まっていない語は、認識のヒントとしてだけ登録する。
+    /// 用語集に足すかどうかの判断。置き換えにするか（replace）、認識のヒントだけにするか。
+    public struct Decision: Equatable, Sendable {
+        public var pair: CorrectionPair
+        public var replace: Bool
+    }
+
+    /// AI に聞いて、候補ごとの判断を決める。用語集には触らない。
+    /// AI への質問は並べて行う（全体でも待ち時間はおよそ timeout まで）。
+    public func decide(_ c: CorrectionCandidates) async -> [Decision] {
         let pairs = c.pairs.filter(Self.isWorthRegistering)
-        let hintsOnly = c.unresolved.filter { !Self.isBlank($0) }
-
-        let before = glossary
-        var registered: [(pair: CorrectionPair, replacement: Bool)] = []
-        for pair in pairs {
-            let common = await ask { judge in try await judge.isCommonWord(pair.from) } ?? true
-            if common {
-                glossary.addTerm(pair.to)
-            } else {
-                glossary.addCorrection(from: pair.from, to: pair.to)
+        // 置き換え元が決まっていない語は、認識のヒントとしてだけ登録する。
+        let hintsOnly = c.unresolved.filter(Self.isWorthAsTerm)
+        let replaceable = await withTaskGroup(of: (Int, Bool).self) { group in
+            for (index, pair) in pairs.enumerated() where pair.from.count >= Self.minReplacementSource {
+                group.addTask {
+                    let common = await self.ask { judge in try await judge.isCommonWord(pair.from) } ?? true
+                    return (index, !common)
+                }
             }
-            registered.append((pair, !common))
+            var result = Set<Int>()
+            for await (index, replace) in group where replace { result.insert(index) }
+            return result
         }
-        for word in hintsOnly {
-            glossary.addTerm(word)
-            registered.append((CorrectionPair(from: "", to: word), false))
-        }
+        return pairs.enumerated().map { Decision(pair: $0.element, replace: replaceable.contains($0.offset)) }
+            + hintsOnly.map { Decision(pair: CorrectionPair(from: "", to: $0), replace: false) }
+    }
 
+    /// 判断を用語集に足す。足したものがなければ nil。表示には、実際に足したものだけを数える。
+    public static func apply(_ decisions: [Decision], to glossary: inout Glossary) -> Registration? {
+        let before = glossary
+        var added: [Decision] = []
+        for d in decisions {
+            let termsBefore = glossary.terms.count
+            let replacementsBefore = glossary.replacements.count
+            if d.replace {
+                glossary.addCorrection(from: d.pair.from, to: d.pair.to)
+            } else {
+                glossary.addTerm(d.pair.to)
+            }
+            let addedReplacement = glossary.replacements.count > replacementsBefore
+            if glossary.terms.count > termsBefore || addedReplacement {
+                added.append(Decision(pair: d.pair, replace: addedReplacement))
+            }
+        }
         let oldTerms = Set(before.terms.map(\.text))
         let oldIDs = Set(before.replacements.map(\.id))
         let addedTerms = glossary.terms.map(\.text).filter { !oldTerms.contains($0) }
         let addedIDs = glossary.replacements.map(\.id).filter { !oldIDs.contains($0) }
-        guard !addedTerms.isEmpty || !addedIDs.isEmpty, let first = registered.first else { return nil }
+        guard let first = added.first else { return nil }
 
         let message: String
-        if registered.count > 1 {
-            message = "\(first.pair.to) ほか \(registered.count - 1) 件を登録しました"
-        } else if first.replacement {
+        if added.count > 1 {
+            message = "\(first.pair.to) ほか \(added.count - 1) 件を登録しました"
+        } else if first.replace {
             message = "\(first.pair.from) → \(first.pair.to) を登録しました"
         } else {
             message = "\(first.pair.to) を登録しました"
         }
         return Registration(addedTerms: addedTerms, addedReplacementIDs: addedIDs, message: message)
+    }
+
+    /// 判断して、そのまま用語集に足す。登録するものがなければ nil。
+    public func register(_ c: CorrectionCandidates, into glossary: inout Glossary) async -> Registration? {
+        Self.apply(await decide(c), to: &glossary)
     }
 
     /// その登録で足したもののうち、まだ残っているものだけを消す。
@@ -74,7 +101,7 @@ public struct CorrectionRegistrar: Sendable {
     }
 
     /// AI に聞く。AI がない、時間切れ、エラーのときは nil。
-    private func ask<T: Sendable>(_ op: @escaping @Sendable (CorrectionJudge) async throws -> T) async -> T? {
+    fileprivate func ask<T: Sendable>(_ op: @escaping @Sendable (CorrectionJudge) async throws -> T) async -> T? {
         guard let judge else { return nil }
         let timeout = timeout
         let sleep = sleep
@@ -90,8 +117,22 @@ public struct CorrectionRegistrar: Sendable {
         }
     }
 
+    /// これより短い置き換え元は、別の語の一部（「リア」と「リアル」など）を書き換えてしまうので、置き換えにしない。
+    static let minReplacementSource = 3
+
     static func isWorthRegistering(_ p: CorrectionPair) -> Bool {
-        !p.from.isEmpty && p.from != p.to && !isBlank(p.to) && !(p.from.count <= 1 && p.to.count <= 1)
+        !p.from.isEmpty && p.from != p.to && isWorthAsTerm(p.to) && !(p.from.count <= 1 && p.to.count <= 1)
+    }
+
+    /// 用語にする価値がある語か。空白や句読点だけ、1 文字、ひらがなだけ（語尾の直しなど）、
+    /// 漢字と英字が混ざったもの（選択が音声入力の外まで広がったもの）は用語にしない。
+    static func isWorthAsTerm(_ s: String) -> Bool {
+        guard !isBlank(s), s.count > 1 else { return false }
+        let scalars = s.unicodeScalars
+        if scalars.allSatisfy({ (0x3040...0x309F).contains($0.value) }) { return false }
+        let hasLatin = scalars.contains { $0.isASCII && $0.properties.isAlphabetic }
+        let hasKanji = scalars.contains { (0x4E00...0x9FFF).contains($0.value) }
+        return !(hasLatin && hasKanji)
     }
 
     /// 空白と句読点だけなら true。
