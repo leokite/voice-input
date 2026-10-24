@@ -16,6 +16,8 @@ struct Chunk: Sendable {
     var bundleID: String?
     var realtime = false
     var micOn = true
+    /// 押した時点でマイクを始められなかった。確定したらエラーを出す。
+    var micFailed = false
 
     /// マイクから届いた音声（どのスレッドからでも yield できる）。
     let chunkStream: AsyncStream<Chunk>

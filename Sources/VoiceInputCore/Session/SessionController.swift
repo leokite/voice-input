@@ -96,13 +96,16 @@ public enum SessionState: Equatable, Sendable {
         setState(.idle)
         let r = Recording(startedAt: now())
         let chunks = r.chunks
+        recording = r
         do {
             try audio.start(onChunk: { data, rms in chunks.yield(Chunk(data: data, rms: rms)) })
         } catch {
-            show(.error("マイクを使用できません"))
+            // 押しただけ（取り消しになるかもしれない）では知らせない。録音だと確定したときにエラーを出す。
+            r.micOn = false
+            r.micFailed = true
+            chunks.finish()
             return
         }
-        recording = r
         r.pump = Task { [weak self] in
             for await chunk in r.chunkStream {
                 self?.received(chunk, in: r)
@@ -135,6 +138,11 @@ public enum SessionState: Equatable, Sendable {
 
     private func confirm() {
         guard let r = recording, r.phase == .buffering else { return }
+        if r.micFailed {
+            recording = nil
+            show(.error("マイクを使用できません"))
+            return
+        }
         let settings = settings()
         r.phase = .recording
         r.bundleID = frontmost.frontmostBundleID()

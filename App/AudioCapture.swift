@@ -14,11 +14,9 @@ final class AudioCapture: AudioSource {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
             break
-        case .notDetermined:
-            // 許可のダイアログを出す。今回の録音は失敗として扱い、許可後の次の録音から使える。
-            AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            throw CaptureError.permissionDenied
         default:
+            // 未確認でも、押した時点では許可のダイアログを出さない（普通の Option 操作で出てしまう）。
+            // 許可を求めるのは、権限の画面か、録音だと確定したとき（AppCoordinator）。
             throw CaptureError.permissionDenied
         }
 

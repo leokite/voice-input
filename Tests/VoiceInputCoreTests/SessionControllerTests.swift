@@ -199,6 +199,18 @@ struct SessionControllerTests {
         #expect(h.factory.sessions.isEmpty)
     }
 
+    @Test func micStartFailureIsSilentUntilConfirm() async {
+        let h = Harness()
+        h.audio.startError = InsertionError.failed
+        h.controller.handle(.beginBuffering)
+        #expect(h.states.isEmpty)
+        // 普通の Option 操作（取り消し）では何も出さない。
+        h.controller.handle(.cancel)
+        await h.controller.waitUntilIdle()
+        #expect(h.states.isEmpty)
+        #expect(h.factory.sessions.isEmpty)
+    }
+
     @Test func serverErrorWinsOverSendFailure() async {
         let h = Harness()
         h.confirm()
