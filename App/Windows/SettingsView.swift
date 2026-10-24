@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var apiKeyError: String?
     @State private var openAIKeyInput = ""
     @State private var openAIKeyError: String?
+    @State private var modelInput = ""
     @State private var languageText = ""
     @State private var newFiller = ""
     @State private var launchError: String?
@@ -101,8 +102,19 @@ struct SettingsView: View {
                                     coordinator: coordinator)
                 Toggle("外部AI（OpenAI）で置き換え元を探す", isOn: binding(\.useCloudLocator))
                 if coordinator.settings.useCloudLocator {
-                    Text("単語だけを選んだときなどに、直前の音声入力の文と直した語を OpenAI（\(coordinator.settings.cloudModel)）に送ります。")
+                    Text("単語だけを選んだときなどに、直前の音声入力の文と直した語を OpenAI に送ります。")
                         .foregroundStyle(.secondary)
+                    TextField("モデル名", text: $modelInput, prompt: Text("例: gpt-6-luna"))
+                        .onSubmit { saveModel() }
+                        .onAppear { modelInput = coordinator.settings.cloudModel }
+                    HStack {
+                        Button("モデル名を保存") { saveModel() }
+                            .disabled(modelInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                                      == coordinator.settings.cloudModel)
+                        if coordinator.settings.cloudModel.isEmpty {
+                            Text("モデル名を入力してください。空のあいだは OpenAI を使いません。").foregroundStyle(.orange)
+                        }
+                    }
                     SecureField("OpenAI API キー", text: $openAIKeyInput)
                     HStack {
                         Button("保存") { saveOpenAIKey() }
@@ -166,6 +178,14 @@ struct SettingsView: View {
         s.fillers.append(text)
         coordinator.updateSettings(s)
         newFiller = ""
+    }
+
+    /// モデル名は 1 文字打つごとではなく、保存を押したとき（または Return）に設定ファイルへ書く。
+    private func saveModel() {
+        var s = coordinator.settings
+        s.cloudModel = modelInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        modelInput = s.cloudModel
+        coordinator.updateSettings(s)
     }
 
     private func saveOpenAIKey() {

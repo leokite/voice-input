@@ -11,13 +11,21 @@ public struct OpenAISourceLocator: SourceLocator {
     public typealias Send = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
     private let apiKey: String
-    private let model: String
+    public let model: String
     private let send: Send
 
     public init(apiKey: String, model: String, send: @escaping Send = OpenAISourceLocator.urlSessionSend) {
         self.apiKey = apiKey
         self.model = model
         self.send = send
+    }
+
+    /// キーとモデル名がそろっていれば作る。どちらかが空なら nil（OpenAI を使わない）。
+    public static func make(apiKey: String, model: String) -> OpenAISourceLocator? {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !model.isEmpty else { return nil }
+        return OpenAISourceLocator(apiKey: key, model: model)
     }
 
     public static let endpoint = URL(string: "https://api.openai.com/v1/responses")!

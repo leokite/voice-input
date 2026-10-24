@@ -185,11 +185,11 @@ import VoiceInputCore
         hasOpenAIKey = false
     }
 
-    /// 設定でオンにしていて、キーがあれば、置き換え元を OpenAI に探してもらう。
+    /// 設定でオンにしていて、キーとモデル名（設定ファイルの cloudModel）があれば、置き換え元を OpenAI に探してもらう。
     private func makeLocator() -> SourceLocator? {
         guard settings.useCloudLocator, hasOpenAIKey,
-              let key = KeychainStore.loadAPIKey(account: KeychainStore.openAIAccount), !key.isEmpty else { return nil }
-        return OpenAISourceLocator(apiKey: key, model: settings.cloudModel)
+              let key = KeychainStore.loadAPIKey(account: KeychainStore.openAIAccount) else { return nil }
+        return OpenAISourceLocator.make(apiKey: key, model: settings.cloudModel)
     }
 
     func updateGlossary(_ new: Glossary) {
