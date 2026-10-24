@@ -161,7 +161,7 @@ struct SessionControllerTests {
         h.session.fail(SonioxError.connectionClosed)
         await h.controller.waitUntilIdle()
         #expect(h.history.map(\.text) == ["途中まで"])
-        #expect(h.history.first?.inserted == false)
+        #expect(h.history.first?.inserted == true)
         #expect(h.inserter.inserted == ["途中まで"])
         #expect(h.states.last == .error("ネットワークに接続できません"))
         #expect(h.audio.stopped)
@@ -170,6 +170,85 @@ struct SessionControllerTests {
         h.controller.handle(.stop)
         await h.controller.waitUntilIdle()
         #expect(h.states.last == .error("ネットワークに接続できません"))
+    }
+
+    @Test func socketClosesAfterAppSwitchSavesFinalsUninserted() async {
+        let h = Harness()
+        h.confirm()
+        h.frontmost.bundleID = "com.example.other"
+        h.session.push(.final("途中まで"))
+        h.session.fail(SonioxError.connectionClosed)
+        await h.controller.waitUntilIdle()
+        #expect(h.inserter.inserted.isEmpty)
+        #expect(h.history.map(\.text) == ["途中まで"])
+        #expect(h.history.first?.inserted == false)
+        #expect(h.states.last == .error("ネットワークに接続できません"))
+    }
+
+    @Test func micStartFailureShowsError() async {
+        let h = Harness()
+        h.audio.startError = InsertionError.failed
+        h.controller.handle(.beginBuffering)
+        h.controller.handle(.confirm(.toggle))
+        await h.controller.waitUntilIdle()
+        #expect(h.factory.sessions.isEmpty)
+        #expect(h.states == [.error("マイクを使用できません")])
+        await h.clock.waitForSleeper(.seconds(3))
+        h.clock.advance(by: .seconds(3))
+        await h.waitForState(.idle)
+        #expect(h.factory.sessions.isEmpty)
+    }
+
+    @Test func serverErrorWinsOverSendFailure() async {
+        let h = Harness()
+        h.confirm()
+        h.session.sendError = SonioxError.connectionClosed
+        h.audio.emit(Data("A".utf8), rms: 0.5)
+        // 送信に失敗し、受信の終わりを（最大 1 秒）待っている。
+        await h.clock.waitForSleeper(.seconds(1))
+        h.session.fail(SonioxError.unauthenticated)
+        await h.controller.waitUntilIdle()
+        #expect(h.states.last == .error("API キーが正しくありません"))
+        #expect(h.session.log == ["finish"])
+        #expect(h.audio.stopped)
+    }
+
+    @Test func sendFailureWithoutServerErrorShowsNetworkError() async {
+        let h = Harness()
+        h.confirm()
+        h.session.sendError = SonioxError.connectionClosed
+        h.audio.emit(Data("A".utf8), rms: 0.5)
+        await h.clock.waitForSleeper(.seconds(1))
+        h.clock.advance(by: .seconds(1))
+        await h.controller.waitUntilIdle()
+        #expect(h.states.last == .error("ネットワークに接続できません"))
+        #expect(h.session.log == ["finish"])
+    }
+
+    @Test func startTimesOutAfterFiveSeconds() async {
+        let h = Harness()
+        h.factory.startDelay = .seconds(60)
+        h.confirm()
+        h.session.push(.final("届かない"))
+        await h.clock.waitForSleeper(.seconds(5))
+        h.clock.advance(by: .seconds(5))
+        await h.controller.waitUntilIdle()
+        #expect(h.states.last == .error("ネットワークに接続できません"))
+        #expect(h.session.log == ["finish"])
+        #expect(h.audio.stopped)
+        #expect(h.history.isEmpty)
+    }
+
+    @Test func insertionFailureShowsNotice() async {
+        let h = Harness()
+        h.inserter.error = .failed
+        h.confirm()
+        h.session.push(.final("テスト"))
+        await h.stop()
+        await h.respondFinAndWait()
+        #expect(h.states.last == .notice("文字を入力できませんでした。履歴に保存しました"))
+        #expect(h.history.count == 1)
+        #expect(h.history.first?.inserted == false)
     }
 
     @Test func unauthenticatedShowsKeyError() async {

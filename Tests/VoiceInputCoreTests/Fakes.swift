@@ -65,8 +65,10 @@ final class FakeAudio: AudioSource {
     private(set) var started = false
     private(set) var stopped = false
     private var onChunk: (@Sendable (Data, Float) -> Void)?
+    var startError: Error?
 
     func start(onChunk: @escaping @Sendable (Data, Float) -> Void) throws {
+        if let startError { throw startError }
         started = true
         stopped = false
         self.onChunk = onChunk
@@ -87,6 +89,8 @@ final class FakeAudio: AudioSource {
     private let continuation: AsyncThrowingStream<SonioxResponse, Error>.Continuation
     private let clock: TestClock
     var startDelay: Duration
+    /// 設定すると sendAudio がこのエラーを投げる（ソケットが閉じた後の送信を再現する）。
+    var sendError: Error?
     private(set) var config: SonioxConfig?
     private(set) var log: [String] = [] {
         didSet { resumeWaiters() }
@@ -105,6 +109,7 @@ final class FakeAudio: AudioSource {
     }
 
     func sendAudio(_ pcm: Data) async throws {
+        if let sendError { throw sendError }
         log.append("audio:" + String(decoding: pcm, as: UTF8.self))
     }
 

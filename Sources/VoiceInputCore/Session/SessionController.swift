@@ -98,6 +98,7 @@ public enum SessionState: Equatable, Sendable {
         do {
             try audio.start(onChunk: { data, rms in chunks.yield(Chunk(data: data, rms: rms)) })
         } catch {
+            show(.error("マイクを使用できません"))
             return
         }
         recording = r
@@ -180,17 +181,34 @@ public enum SessionState: Equatable, Sendable {
 
     private func run(_ session: TranscriptionSession, config: SonioxConfig, for r: Recording) async {
         do {
-            try await session.start(config: config)
+            let started = await withTimeout(.seconds(5)) { () async -> Result<Void, Error> in
+                do {
+                    try await session.start(config: config)
+                    return .success(())
+                } catch {
+                    return .failure(error)
+                }
+            }
+            guard let started else { throw SonioxError.connectionClosed }
+            try started.get()
             r.receiver = Task { [weak self] in
                 await self?.receive(session.responses, for: r)
             }
             for await data in r.outboxStream {
                 if r.failure != nil { break }
-                try await session.sendAudio(data)
+                do { try await session.sendAudio(data) } catch { throw SendFailure(underlying: error) }
             }
             if let failure = r.failure { throw failure }
-            try await session.finalize()
+            do { try await session.finalize() } catch { throw SendFailure(underlying: error) }
             try await waitForFin(r)
+        } catch let failure as SendFailure {
+            // 送信の失敗はソケットが閉じた結果にすぎないことが多い。サーバーの本当のエラー
+            // （受信側に届く）を優先するため、受信の終わりを最大 1 秒待つ。
+            stopMic(r)
+            if let receiver = r.receiver {
+                _ = await withTimeout(.seconds(1)) { await receiver.value }
+            }
+            fail(r, failure.underlying)
         } catch {
             fail(r, error)
         }
@@ -198,6 +216,19 @@ public enum SessionState: Equatable, Sendable {
         await session.finish()
         await r.receiver?.value
         complete(r)
+    }
+
+    /// `operation` を最大 `limit`（注入された時計）まで待つ。間に合わなければ nil。
+    private func withTimeout<T: Sendable>(_ limit: Duration, _ operation: @escaping () async -> T) async -> T? {
+        let gate = Gate<T?>()
+        Task { gate.open(await operation()) }
+        let timer = Task { [weak self] in
+            await self?.sleep(limit)
+            gate.open(nil)
+        }
+        let result = await withCheckedContinuation { gate.continuation = $0 }
+        timer.cancel()
+        return result
     }
 
     private func receive(_ responses: AsyncThrowingStream<SonioxResponse, Error>, for r: Recording) async {
@@ -301,7 +332,7 @@ public enum SessionState: Equatable, Sendable {
                 text: r.processedText,
                 rawText: r.assembler.finalText,
                 duration: (r.stoppedAt ?? now()) - r.startedAt,
-                inserted: r.failure == nil && r.allInserted
+                inserted: r.allInserted
             ))
         }
         if !r.usedTerms.isEmpty { onTermsUsed(r.usedTerms) }
@@ -312,6 +343,8 @@ public enum SessionState: Equatable, Sendable {
             show(.notice("アプリが切り替わったため履歴に保存しました"))
         } else if r.blocked == .secureInput {
             show(.notice("パスワード欄には入力できません"))
+        } else if r.blocked == .failed {
+            show(.notice("文字を入力できませんでした。履歴に保存しました"))
         } else {
             setState(.idle)
         }

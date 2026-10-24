@@ -59,3 +59,19 @@ struct Chunk: Sendable {
         if let error { waiter.resume(throwing: error) } else { waiter.resume() }
     }
 }
+
+/// 送信（sendAudio、finalize）の失敗。受信側のエラーと区別するために包む。
+struct SendFailure: Error {
+    let underlying: Error
+}
+
+/// 最初の 1 回だけ値を渡す待ち合わせ。
+@MainActor final class Gate<T: Sendable> {
+    var continuation: CheckedContinuation<T, Never>?
+
+    func open(_ value: T) {
+        guard let continuation else { return }
+        self.continuation = nil
+        continuation.resume(returning: value)
+    }
+}
