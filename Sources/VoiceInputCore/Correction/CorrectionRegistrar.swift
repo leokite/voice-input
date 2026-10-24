@@ -12,6 +12,11 @@ public protocol SourceLocator: Sendable {
     func locate(word: String, in sentence: String) async throws -> String?
 }
 
+/// 履歴の文と選んだ文字列を丸ごと渡して、「置き換え元 → 正しい語」の組み合わせを取り出してもらう外部の AI。
+public protocol CorrectionExtractor: Sendable {
+    func extract(sentence: String, selection: String) async throws -> [CorrectionPair]
+}
+
 /// 1 回の登録で用語集に足したもの。取り消しに使う。
 public struct Registration: Equatable, Sendable {
     public var addedTerms: [String]
@@ -23,15 +28,17 @@ public struct Registration: Equatable, Sendable {
 public struct CorrectionRegistrar: Sendable {
     private let judge: CorrectionJudge?
     private let locator: SourceLocator?
+    private let extractor: CorrectionExtractor?
     private let timeout: Duration
     private let locatorTimeout: Duration
     private let sleep: @Sendable (Duration) async -> Void
 
-    public init(judge: CorrectionJudge?, locator: SourceLocator? = nil,
+    public init(judge: CorrectionJudge?, locator: SourceLocator? = nil, extractor: CorrectionExtractor? = nil,
                 timeout: Duration = .milliseconds(1500), locatorTimeout: Duration = defaultLocatorTimeout,
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.judge = judge
         self.locator = locator
+        self.extractor = extractor
         self.timeout = timeout
         self.locatorTimeout = locatorTimeout
         self.sleep = sleep
@@ -77,13 +84,34 @@ public struct CorrectionRegistrar: Sendable {
     /// AI に聞いて、候補ごとの判断を決める。用語集には触らない。
     /// AI への質問は並べて行う（全体でも待ち時間はおよそ timeout まで）。
     public func decide(_ c: CorrectionCandidates) async -> Outcome {
+        var c = c
+        var issue: LocatorIssue?
+        // 外部の AI があれば、まず組み合わせを丸ごと取り出してもらう。使えるものがあれば、プログラムの結果より優先する。
+        if let extractor, !c.selection.isEmpty {
+            switch await extract(extractor, c.sentence, c.selection) {
+            case .pairs(let pairs):
+                let usable = Array(pairs.filter {
+                    !$0.from.isEmpty && !$0.to.isEmpty && $0.from != $0.to
+                        && c.sentence.contains($0.from) && c.selection.contains($0.to)
+                }.prefix(3))
+                if !usable.isEmpty {
+                    c.pairs = usable
+                    c.unresolved = []
+                }
+            case .timedOut:
+                issue = .timedOut(locatorTimeout)
+            case .failed:
+                issue = .failed
+            }
+        }
+
         var located: [CorrectionPair] = []
         var hintsOnly: [String] = []
-        var issue: LocatorIssue?
         // 置き換え元が決まっていない語は、外部の AI があれば聞く。答えが履歴の文にあるときだけ使う。
         // 見つからなければ、認識のヒントとしてだけ登録する。
         for word in c.unresolved.filter(Self.isWorthAsTerm) {
-            guard let locator else {
+            // 組み合わせの取り出しで、すでに時間切れやエラーになっていれば、もう待たない。
+            guard let locator, issue == nil else {
                 hintsOnly.append(word)
                 continue
             }
@@ -170,6 +198,31 @@ public struct CorrectionRegistrar: Sendable {
         case answer(String?)
         case timedOut
         case failed
+    }
+
+    private enum ExtractResult: Sendable {
+        case pairs([CorrectionPair])
+        case timedOut
+        case failed
+    }
+
+    private func extract(_ extractor: CorrectionExtractor, _ sentence: String, _ selection: String) async -> ExtractResult {
+        let sleep = sleep
+        let timeout = locatorTimeout
+        return await withTaskGroup(of: ExtractResult.self) { group in
+            group.addTask {
+                do { return .pairs(try await extractor.extract(sentence: sentence, selection: selection)) } catch {
+                    return .failed
+                }
+            }
+            group.addTask {
+                await sleep(timeout)
+                return .timedOut
+            }
+            let first = await group.next() ?? .timedOut
+            group.cancelAll()
+            return first
+        }
     }
 
     /// OpenAI に聞く。時間切れとエラーを分けて返す。

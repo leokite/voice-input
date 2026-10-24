@@ -33,6 +33,16 @@ private struct FakeLocator: SourceLocator {
     }
 }
 
+/// 答えを決めておける偽物の、組み合わせを取り出す外部AI。
+private struct FakeExtractor: CorrectionExtractor {
+    var pairs: [CorrectionPair] = []
+    var hang = false
+    func extract(sentence: String, selection: String) async throws -> [CorrectionPair] {
+        if hang { try await Task.sleep(for: .seconds(3600)) }
+        return pairs
+    }
+}
+
 @Suite struct CorrectionRegistrarTests {
     let id = UUID()
 
@@ -219,5 +229,42 @@ private struct FakeLocator: SourceLocator {
 
     @Test func defaultLocatorTimeoutIsFiveSeconds() {
         #expect(CorrectionRegistrar.defaultLocatorTimeout == .seconds(5))
+    }
+
+    func gptCandidates() -> CorrectionCandidates {
+        CorrectionCandidates(entryID: id, sentence: "OpenAIのAPIで使うモデルは、GPT-6、Lunaだと思いますが。",
+                             pairs: [CorrectionPair(from: "Luna", to: "luna")], unresolved: [],
+                             selection: "モデルは、gpt-6-lunaだと思いますが")
+    }
+
+    // B: OpenAI が取り出した組み合わせを、プログラムの結果より優先する。
+    @Test func extractorPairsReplaceProgramPairs() async throws {
+        var g = Glossary.empty
+        let r = CorrectionRegistrar(judge: FakeJudge(), extractor: FakeExtractor(
+            pairs: [CorrectionPair(from: "GPT-6、Luna", to: "gpt-6-luna")]))
+        let reg = try #require(await r.register(gptCandidates(), into: &g))
+        #expect(g.replacements.map { "\($0.from)→\($0.to)" } == ["GPT-6、Luna→gpt-6-luna"])
+        #expect(g.terms.map(\.text) == ["gpt-6-luna"])
+        #expect(reg.message == "GPT-6、Luna → gpt-6-luna を登録しました")
+    }
+
+    // 置き換え元が履歴の文にない、正しい語が選択にない組み合わせは使わず、プログラムの結果に戻る。
+    @Test func extractorPairsNotInTextAreIgnored() async throws {
+        var g = Glossary.empty
+        let r = CorrectionRegistrar(judge: FakeJudge(), extractor: FakeExtractor(pairs: [
+            CorrectionPair(from: "GPT-7", to: "gpt-6-luna"),
+            CorrectionPair(from: "GPT-6、Luna", to: "gpt-7"),
+        ]))
+        _ = await r.register(gptCandidates(), into: &g)
+        #expect(g.replacements.map { "\($0.from)→\($0.to)" } == ["Luna→luna"])
+    }
+
+    @Test func extractorTimeoutFallsBackToProgramPairsWithNote() async throws {
+        var g = Glossary.empty
+        let r = CorrectionRegistrar(judge: FakeJudge(), extractor: FakeExtractor(hang: true),
+                                    locatorTimeout: .milliseconds(50))
+        let reg = try #require(await r.register(gptCandidates(), into: &g))
+        #expect(g.replacements.map { "\($0.from)→\($0.to)" } == ["Luna→luna"])
+        #expect(reg.message.hasSuffix("（OpenAI の応答が 0.05 秒を超えたため、ヒントだけ登録しました）"))
     }
 }
