@@ -61,6 +61,7 @@
 **Files:**
 - Create: `Sources/VoiceInputCore/Local/LocalTranscriber.swift`（プロトコルとエラー）
 - Create: `Sources/VoiceInputCore/Local/LocalTranscriptionSession.swift`
+- Create: `Sources/VoiceInputCore/Local/EngineSessionFactory.swift`
 - Modify: `Sources/VoiceInputCore/Soniox/SonioxSession.swift`（`finalizeTimeout` の追加）
 - Modify: `Sources/VoiceInputCore/Session/SilenceDetector.swift`（`defaultThreshold` を公開）
 - Modify: `Sources/VoiceInputCore/Session/SessionController.swift`
@@ -73,6 +74,7 @@
   - `public protocol LocalTranscriber: Sendable { func transcribe(pcm: Data, languageHints: [String], terms: [String]) async throws -> String }`（`pcm` は 16kHz モノラル s16le）
   - `public struct LocalTranscriptionError: Error, Equatable { public let message: String; public init(message: String) }`
   - `public final class LocalTranscriptionSession: TranscriptionSession, @unchecked Sendable`、`public init(transcriber: LocalTranscriber)`、`var finalizeTimeout: Duration`（15 秒 + 録音の長さの 3 倍。値は私の判断で、`voice-eval` の実測で調整してよい）
+  - `public struct EngineSessionFactory: TranscriptionSessionFactory`、`public init(settings: @escaping @Sendable () -> AppSettings, soniox: @escaping @Sendable () -> TranscriptionSession, local: @escaping @Sendable () -> TranscriptionSession)`。`makeSession()` は録音のたびに `settings().engine` を読み、`.soniox` なら `soniox()`、`.local` なら `local()` だけを呼ぶ（選ばれなかった側のクロージャは呼ばない）。
   - `TranscriptionSession` に `var finalizeTimeout: Duration { get }` を追加し、拡張で既定値 `.seconds(5)`（Soniox は今の挙動のまま）
   - `SilenceDetector.defaultThreshold: Float`（0.01。`init` の既定値もこれを使う）
   - `SessionError.transcription`（`message` は「文字起こしに失敗しました」）。`SessionError.init(_ error:)` は `LocalTranscriptionError` を `.transcription` にする。
@@ -90,6 +92,7 @@
   - `neverLoudRecordingIsNotTranscribed`: 無音のチャンクだけで止めると、`transcriber.calls.isEmpty`、`inserted.isEmpty`、`history.isEmpty`、`errors.isEmpty`、最後の状態は `.idle`（Review Focus 1）
   - `transcriberFailureShowsTranscriptionError`: 失敗させると、`errors == [.transcription]`、`inserted.isEmpty`、`history.isEmpty`、状態に `.error("文字起こしに失敗しました")` が現れる（Review Focus 2）
   - `localEngineInsertsInOneBatch`: `settings.insertionMode = .realtime`、`settings.engine = .local`、結果 `"一つ目。二つ目。"` で、`inserted == ["一つ目。二つ目。"]`（Step 3 の前にこのテストが失敗しないなら、リアルタイムとの違いが出る形に強める）
+  - `localEngineNeverBuildsSonioxSession`: `EngineSessionFactory` で、`engine = .local` のとき `soniox` のクロージャが 0 回、`local` が 1 回呼ばれる。`.soniox` に変えて作り直すと、逆になる
   - `finalizeTimeoutGrowsWithAudio`: 音声なしで `finalizeTimeout >= .seconds(15)`、10 秒分（320000 バイト）を送ると `>= .seconds(45)`
   - `SessionControllerTests.swift` に `usesSessionFinalizeTimeout`: `FakeSession.finalizeTimeout = .seconds(60)` にし、止めてから 5.1 秒進めても `.processing` のまま。その後 `<fin>` を返すと、エラーなしで `.idle` になる
 - [ ] **Step 3: 実行して失敗を確かめる** — `swift test --filter LocalTranscriptionSessionTests`、期待: コンパイルエラー。
@@ -159,6 +162,7 @@
 - Modify: `project.yml`
 - Create: `Sources/VoiceInputLocal/WhisperKitTranscriber.swift`
 - Create: `Sources/VoiceInputLocal/LocalModelManager.swift`
+- Create: `Eval/glossary.json`
 - Modify: `Sources/voice-eval/main.swift`
 
 **Interfaces:**
@@ -172,11 +176,12 @@
 - `transcribe`: 言語は、ヒントが複数なら WhisperKit の言語判定（音声配列を受け取る `detectLangauge(audioArray:)`。綴りが `detectLangauge` なのに注意）の確率から `LanguageChoice.pick` で選び、ヒントが 1 つならそれを使う。`DecodingOptions(task: .transcribe, language:, temperature: 0)`。用語は `PromptTerms.build` の結果をトークナイズし（先頭に空白を足し、特殊トークンを除く）、`promptTokens` と `usePrefillPrompt = true` に入れる。入力の PCM は Float に直す（`Int16` を 32768 で割る）。結果の各区間の文字列をつなぐ。失敗は `LocalTranscriptionError` に包む。
 - `download()`: `WhisperKit.download(variant:downloadBase:progressCallback:)` でモデルを取り、進み具合を `.downloading(fraction:)` に反映する。続けて、トークナイザーの取得とコンパイルのため、一度 WhisperKit を読み込んで短い無音を認識する（`.preparing`）。成功したら `isInstalled` を確かめて `.ready`。失敗は `.failed(理由)`。途中で止めても、次の `refresh()` で `isInstalled` が false なら `.notInstalled` に戻る。
 - `delete()`: `downloadBase` の下のモデルとトークナイザーを消し、`.notInstalled` にする。
+- `Eval/glossary.json`: 試作で使った 18 語（`GitHub`、`Slack`、`meeting`、`bug`、`release`、`Google Calendar`、`Swift`、`async await`、`Docker`、`API`、`TypeScript`、`Kubernetes`、`main`、`CI`、`ブランチ`、`コミット`、`プルリクエスト`、`デプロイ`）を `terms` に持つ `Glossary` の JSON（`replacements` は空）。
 - `voice-eval`: `--engine local|soniox`（既定 soniox）。local のときは Soniox の API キーを要求せず、`WhisperKitTranscriber` を直接使う（無音の判定はしない）。`--install-local` を付けると、未導入のとき `LocalModelManager.download()` を先に実行して進み具合を表示する。`--glossary <path>` で用語集のファイルを指定できる（未指定なら今のとおり Application Support の `glossary.json`）。
 
 - [ ] **Step 1: パッケージの定義を直す** — `Package.swift` に WhisperKit（`from: "1.1.1"`）、`VoiceInputLocal` ターゲットとプロダクト、`voice-eval` の依存を足す。`project.yml` を直す。`swift build` が通る。
 - [ ] **Step 2: 実装する** — 上の「動き」のとおり。
-- [ ] **Step 3: 保存場所の配置を確かめる** — `swift run voice-eval Eval --engine local --install-local --glossary Eval/glossary.json` を実行する（`Eval/glossary.json` は Task 7 で作るので、無ければ `--glossary` を付けずに実行）。終わったら `find ~/Library/Application\ Support/VoiceInput/Models -maxdepth 5 -type d` で、`LocalModelLayout.modelFolder` と `tokenizerFolder` の場所にファイルがあることを確かめる。違っていたら `LocalModelLayout` を実際の配置に直し、Task 4 のテストの期待も合わせる。
+- [ ] **Step 3: 保存場所の配置を確かめる** — `swift run voice-eval Eval --engine local --install-local --glossary Eval/glossary.json` を実行する。終わったら `find ~/Library/Application\ Support/VoiceInput/Models -maxdepth 5 -type d` で、`LocalModelLayout.modelFolder` と `tokenizerFolder` の場所にファイルがあることを確かめる。違っていたら `LocalModelLayout` を実際の配置に直し、Task 4 のテストの期待も合わせる。
 - [ ] **Step 4: 認識の結果を確かめる** — 同じコマンドをもう一度実行する（2 回目はダウンロードなし）。20 本すべてが `ERROR` でなく文字を返し、最初の読み込みが 2 回目以降は数秒で終わる。
 - [ ] **Step 5: コミット** — `feat: WhisperKit によるローカル文字起こしとモデルの管理を追加`
 
@@ -193,7 +198,7 @@
 
 動き（`AppCoordinator`）:
 - `LocalModelManager`（`base` は `LocalModelLayout.downloadBase(supportDirectory: AppPaths.supportDirectory)`）を持ち、`@Published` で設定画面に見せる。起動時に `refresh()` する。ローカルを選んでいて `.ready` なら、起動時に裏で 1 回短い無音を認識させてモデルを読み込んでおく（私の判断。1.5GB が常駐してよいという前提）。
-- `KeychainSessionFactory` を、設定を読むファクトリに替える。`engine == .soniox` なら今のとおり、`.local` なら `LocalTranscriptionSession(transcriber: models.transcriber)` を返す。録音のたびに設定を読む。
+- `KeychainSessionFactory` を `EngineSessionFactory` に替える。`soniox` は今の `KeychainSessionFactory` の中身（キーチェーンから読んだキーで Soniox のセッションを作る）、`local` は `LocalTranscriptionSession(transcriber: models.transcriber)`。
 - `dispatch` の `gate.decide` に、`hasAPIKey: settings.engine == .local ? true : hasAPIKey` と `localModelReady: settings.engine == .soniox || models.status == .ready` を渡す。`reject` に `.localModelNotReady` を足し、「ローカルのモデルが使えません」のエラーを出して設定画面を開く。
 - `makeLocator` は `settings.allowsCloud` が false なら nil を返す（`extractor` も同じ `makeLocator` の結果を使っている）。
 
@@ -217,7 +222,6 @@
 ### Task 7: 精度の確認とドキュメント
 
 **Files:**
-- Create: `Eval/glossary.json`
 - Modify: `Eval/cases.json`（各ケースに `"group"` を足す）
 - Modify: `Eval/README.md`
 - Modify: `Sources/voice-eval/main.swift`（グループごとの平均を出す）
@@ -228,7 +232,6 @@
 - Consumes: Task 5 の `voice-eval --engine local`。
 
 動き:
-- `Eval/glossary.json`: 試作で使った 18 語（`GitHub`、`Slack`、`meeting`、`bug`、`release`、`Google Calendar`、`Swift`、`async await`、`Docker`、`API`、`TypeScript`、`Kubernetes`、`main`、`CI`、`ブランチ`、`コミット`、`プルリクエスト`、`デプロイ`）を `terms` に持つ `Glossary` の JSON（`replacements` は空）。
 - `cases.json`: 1〜5 を `"ja"`、6〜10 を `"en"`、11〜20 を `"mixed"`。`voice-eval` はこの `group` が付いたケースがあれば、グループごとの平均も出す（`group` は省略できる）。
 - `docs/manual-checks.md`: ローカルの確認項目を足す。Wi-Fi と有線を切って動くこと。通信の監視で、ローカルを選んでいる間は何も送っていないこと（ダウンロード時を除く）。モデルの導入から最初の音声入力まで待たされすぎないこと。30 秒を超える発話で文字が切れないこと（Review Focus 5）。制限のあるネットワークでダウンロードが通るか。
 - `docs/setup.md`: 「0. 始める前に」の「音声を外部に送ってよいか」に、ローカルモードを使えば送らずに済むことと、モデルのダウンロード（約 1.5GB、1 回だけ）を書く。
