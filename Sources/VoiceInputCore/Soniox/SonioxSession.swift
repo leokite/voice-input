@@ -10,10 +10,13 @@ public protocol TranscriptionSession: AnyObject, Sendable {
     var responses: AsyncThrowingStream<SonioxResponse, Error> { get }
     /// `finalize()` から `<fin>` を待つ最長の時間。
     var finalizeTimeout: Duration { get }
+    /// `finalizeTimeout` を過ぎたときに失敗として扱うエラー。
+    var finalizeTimeoutError: Error { get }
 }
 
 extension TranscriptionSession {
     public var finalizeTimeout: Duration { .seconds(5) }
+    public var finalizeTimeoutError: Error { SonioxError.finTimeout }
 }
 
 public protocol TranscriptionSessionFactory: Sendable {

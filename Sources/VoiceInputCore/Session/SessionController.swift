@@ -325,7 +325,7 @@ public enum SessionError: Equatable, Sendable {
         let limit = session.finalizeTimeout
         let timeout = Task { [weak self] in
             await self?.sleep(limit)
-            if !Task.isCancelled { r.resumeFinWaiter(with: SonioxError.finTimeout) }
+            if !Task.isCancelled { r.resumeFinWaiter(with: session.finalizeTimeoutError) }
         }
         defer { timeout.cancel() }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

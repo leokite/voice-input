@@ -31,6 +31,38 @@ struct LocalTranscriptionSessionTests {
         #expect(transcriber.calls.first?.pcm.count == 6400)
         #expect(transcriber.calls.first?.hints == h.settings.languageHints)
         #expect(h.history.count == 1)
+        #expect(transcriber.calls.first?.terms == [])
+    }
+
+    @Test func unexpectedTranscriberErrorShowsTranscriptionError() async {
+        struct Raw: Error {}
+        let transcriber = FakeLocalTranscriber()
+        transcriber.result = .failure(Raw())
+        let h = makeHarness(transcriber)
+        h.confirm()
+        h.audio.emit(loudPCM(), rms: 0.2)
+        await h.stop()
+        await h.controller.waitUntilIdle()
+        #expect(h.errors == [.transcription])
+        #expect(h.states.contains(.error("文字起こしに失敗しました")))
+    }
+
+    @Test func recognitionOutlastingTimeoutShowsTranscriptionError() async {
+        let session = LocalTranscriptionSession(transcriber: HangingTranscriber())
+        let h = Harness(sessions: SingleSessionFactory(session))
+        h.settings.engine = .local
+        h.confirm()
+        h.audio.emit(loudPCM(), rms: 0.2)
+        await h.stop()
+        // 音声が届いて待ち時間が確定するまで待つ。
+        while session.finalizeTimeout == .seconds(15) { await Task.yield() }
+        let timeout = session.finalizeTimeout
+        await h.clock.waitForSleeper(timeout)
+        h.clock.advance(by: timeout)
+        await h.controller.waitUntilIdle()
+        #expect(h.errors == [.transcription])
+        #expect(h.inserter.inserted.isEmpty)
+        #expect(h.history.isEmpty)
     }
 
     @Test func neverLoudRecordingIsNotTranscribed() async {
@@ -64,15 +96,14 @@ struct LocalTranscriptionSessionTests {
     }
 
     @Test func localEngineInsertsInOneBatch() async {
-        let transcriber = FakeLocalTranscriber()
-        transcriber.result = .success("一つ目。二つ目。")
-        let h = makeHarness(transcriber)
+        let h = Harness()
         h.settings.insertionMode = .realtime
         h.settings.engine = .local
         h.confirm()
-        h.audio.emit(loudPCM(), rms: 0.2)
+        h.session.push(.final("一つ目。"))
+        h.session.push(.final("二つ目。"))
         await h.stop()
-        await h.controller.waitUntilIdle()
+        await h.respondFinAndWait()
         #expect(h.inserter.inserted == ["一つ目。二つ目。"])
     }
 
@@ -107,9 +138,17 @@ struct LocalTranscriptionSessionTests {
 
     @Test func finalizeTimeoutGrowsWithAudio() async throws {
         let session = LocalTranscriptionSession(transcriber: FakeLocalTranscriber())
-        #expect(session.finalizeTimeout >= .seconds(15))
+        #expect(session.finalizeTimeout == .seconds(15))
         try await session.sendAudio(Data(count: 320_000))
-        #expect(session.finalizeTimeout >= .seconds(45))
+        #expect(session.finalizeTimeout == .seconds(45))
+    }
+}
+
+/// 取り消されるまで終わらない。
+private struct HangingTranscriber: LocalTranscriber {
+    func transcribe(pcm: Data, languageHints: [String], terms: [String]) async throws -> String {
+        try await Task.sleep(for: .seconds(3600))
+        return ""
     }
 }
 

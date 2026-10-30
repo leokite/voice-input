@@ -25,6 +25,9 @@ public final class LocalTranscriptionSession: TranscriptionSession, @unchecked S
         return .seconds(15) + .seconds(Double(bytes) / 32000 * 3)
     }
 
+    /// 認識が終わらないときも、ネットワークではなく文字起こしの失敗として扱う。
+    public var finalizeTimeoutError: Error { LocalTranscriptionError(message: "認識が時間内に終わりませんでした") }
+
     public func start(config: SonioxConfig) async throws {
         lock.withLock {
             languageHints = config.languageHints
@@ -33,7 +36,9 @@ public final class LocalTranscriptionSession: TranscriptionSession, @unchecked S
     }
 
     public func sendAudio(_ data: Data) async throws {
-        let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        let samples = stride(from: 0, to: data.count - 1, by: 2).map { i in
+            Int16(bitPattern: UInt16(data[data.startIndex + i]) | UInt16(data[data.startIndex + i + 1]) << 8)
+        }
         let loud = PCMChunker.rms(samples) >= SilenceDetector.defaultThreshold
         lock.withLock {
             pcm.append(data)
@@ -56,7 +61,9 @@ public final class LocalTranscriptionSession: TranscriptionSession, @unchecked S
                 }
                 continuation.yield(Self.fin)
             } catch {
-                continuation.finish(throwing: error)
+                // 想定外のエラーも文字起こしの失敗として扱う（ネットワークの失敗に見せない）。
+                continuation.finish(throwing: error as? LocalTranscriptionError
+                    ?? LocalTranscriptionError(message: "\(error)"))
             }
         }
         lock.withLock { self.task = task }
