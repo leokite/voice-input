@@ -404,7 +404,7 @@ import VoiceInputCore
             default:
                 openWindow?(.permissions)
             }
-        case .network:
+        case .network, .transcription:
             break
         }
     }

@@ -8,6 +8,12 @@ public protocol TranscriptionSession: AnyObject, Sendable {
     func finish() async
     /// 1 回だけ iterate できる。ソケットが閉じるかエラーになると必ず終了する。
     var responses: AsyncThrowingStream<SonioxResponse, Error> { get }
+    /// `finalize()` から `<fin>` を待つ最長の時間。
+    var finalizeTimeout: Duration { get }
+}
+
+extension TranscriptionSession {
+    public var finalizeTimeout: Duration { .seconds(5) }
 }
 
 public protocol TranscriptionSessionFactory: Sendable {

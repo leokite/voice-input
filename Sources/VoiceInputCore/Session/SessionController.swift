@@ -32,8 +32,13 @@ public enum SessionError: Equatable, Sendable {
     case unauthenticated
     case paymentRequired
     case network
+    case transcription
 
     init(_ error: Error) {
+        if error is LocalTranscriptionError {
+            self = .transcription
+            return
+        }
         switch error as? SonioxError {
         case .unauthenticated: self = .unauthenticated
         case .paymentRequired: self = .paymentRequired
@@ -47,6 +52,7 @@ public enum SessionError: Equatable, Sendable {
         case .unauthenticated: "API キーが正しくありません"
         case .paymentRequired: "Soniox の残高または予算が不足しています"
         case .network: "ネットワークに接続できません"
+        case .transcription: "文字起こしに失敗しました"
         }
     }
 }
@@ -173,7 +179,8 @@ public enum SessionError: Equatable, Sendable {
         let settings = settings()
         r.phase = .recording
         r.bundleID = frontmost.frontmostBundleID()
-        r.realtime = settings.insertionMode == .realtime
+        // ローカル認識は常にまとめて入力する。
+        r.realtime = settings.insertionMode == .realtime && settings.engine == .soniox
         r.silence = SilenceDetector(timeout: settings.silenceTimeout)
         r.pipeline = TextPipeline(fillers: FillerRemover(fillers: settings.fillers), glossary: glossary())
         let config = SonioxConfig(languageHints: settings.languageHints,
@@ -256,7 +263,7 @@ public enum SessionError: Equatable, Sendable {
             if let failure = r.failure { throw failure }
             if !r.aborted {
                 do { try await session.finalize() } catch { throw SendFailure(underlying: error) }
-                try await waitForFin(r)
+                try await waitForFin(r, session: session)
             }
         } catch where r.aborted {
             // 捨てた録音のエラーは知らせない。
@@ -313,10 +320,11 @@ public enum SessionError: Equatable, Sendable {
         }
     }
 
-    private func waitForFin(_ r: Recording) async throws {
+    private func waitForFin(_ r: Recording, session: TranscriptionSession) async throws {
         if r.finReached { return }
+        let limit = session.finalizeTimeout
         let timeout = Task { [weak self] in
-            await self?.sleep(.seconds(5))
+            await self?.sleep(limit)
             if !Task.isCancelled { r.resumeFinWaiter(with: SonioxError.finTimeout) }
         }
         defer { timeout.cancel() }
