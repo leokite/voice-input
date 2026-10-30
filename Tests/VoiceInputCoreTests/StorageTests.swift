@@ -105,4 +105,27 @@ import Testing
         let s = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"cloudModel":"gpt-7-nova"}"#.utf8))
         #expect(s.cloudModel == "gpt-7-nova")
     }
+
+    @Test func engineDefaultsToSoniox() {
+        #expect(AppSettings.default.engine == .soniox)
+    }
+
+    @Test func settingsWithoutEngineDecodeAsSoniox() throws {
+        let s = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        #expect(s.engine == .soniox)
+    }
+
+    @Test func engineRoundTrips() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("settings.json")
+        let store = JSONStore<AppSettings>(url: url, defaultValue: .default, log: { _ in })
+        try store.save(AppSettings(engine: .local))
+        #expect(store.load().engine == .local)
+    }
+
+    @Test func localEngineDisallowsCloud() {
+        #expect(AppSettings(engine: .local).allowsCloud == false)
+        #expect(AppSettings(engine: .soniox).allowsCloud == true)
+    }
 }
