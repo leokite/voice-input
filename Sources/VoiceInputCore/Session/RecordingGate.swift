@@ -6,6 +6,8 @@ public struct RecordingGate: Sendable {
     public enum Rejection: Equatable, Sendable {
         /// API キーがないまま録音だと確定した。
         case missingAPIKey
+        /// ローカル認識を選んでいるが、モデルが使える状態でないまま録音だと確定した。
+        case localModelNotReady
         /// 確定した時点でパスワード入力中（Secure Event Input）だった。
         case secureInput
         /// 前の録音をまだ処理している。
@@ -24,8 +26,8 @@ public struct RecordingGate: Sendable {
         }
     }
 
-    /// API キーがないまま押されたキー。確定したら断る。
-    private var pressWithoutKey = false
+    /// 録音を始められないまま押されたキー。確定したらこの理由で断る。
+    private var blockedPress: Rejection?
     /// SessionController に .beginBuffering を渡し、まだ確定も取り消しもしていない。
     public private(set) var buffering = false
     /// 録音中のモード。録音中でなければ nil。
@@ -34,22 +36,27 @@ public struct RecordingGate: Sendable {
     public init() {}
 
     /// 録音中でも、押下の途中でもない。
-    public var isQuiet: Bool { !buffering && activeMode == nil && !pressWithoutKey }
+    public var isQuiet: Bool { !buffering && activeMode == nil && blockedPress == nil }
 
-    public mutating func decide(_ action: KeyAction, hasAPIKey: Bool, secureInput: Bool) -> Decision {
+    public mutating func decide(_ action: KeyAction, hasAPIKey: Bool, secureInput: Bool, localModelReady: Bool = true) -> Decision {
         switch action {
         case .beginBuffering:
             if !hasAPIKey {
-                pressWithoutKey = true
+                blockedPress = .missingAPIKey
+                return Decision()
+            }
+            if !localModelReady {
+                blockedPress = .localModelNotReady
                 return Decision()
             }
             buffering = true
             return Decision(forward: action)
-        case .confirm where pressWithoutKey:
-            pressWithoutKey = false
-            return Decision(rejection: .missingAPIKey)
-        case .cancel where pressWithoutKey:
-            pressWithoutKey = false
+        case .confirm where blockedPress != nil:
+            let reason = blockedPress
+            blockedPress = nil
+            return Decision(rejection: reason)
+        case .cancel where blockedPress != nil:
+            blockedPress = nil
             return Decision()
         case .confirm where secureInput:
             let wasBuffering = buffering
@@ -88,7 +95,7 @@ public struct RecordingGate: Sendable {
     }
 
     public mutating func reset() {
-        pressWithoutKey = false
+        blockedPress = nil
         buffering = false
         activeMode = nil
     }
