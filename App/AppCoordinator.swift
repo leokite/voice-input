@@ -28,8 +28,6 @@ import VoiceInputLocal
     @Published private(set) var canDeleteModel = false
     /// 今エンジンを切り替えてよいか（録音や処理、押下の途中は切り替えない）。
     @Published private(set) var canSwitchEngine = true
-    /// 裏での読み込みに失敗した理由。
-    @Published private(set) var warmUpError: String?
     /// 案内の画面を開く。AppDelegate が WindowPresenter につなぐ。
     var openWindow: ((AppWindow) -> Void)?
 
@@ -266,21 +264,23 @@ import VoiceInputLocal
     }
 
     func refreshModelStatus() {
+        let wasReady = models.status == .ready
         models.refresh()
         modelHasFiles = LocalModelLayout.hasFiles(base: Self.modelBase)
+        // 手で置いたファイルなどで使えるようになったら、最初の録音の前に読み込んでおく
+        if !wasReady { warmUpModelIfNeeded() }
         updateModelFlags()
     }
 
     /// 通信するのはこの操作だけ。
     func downloadModel() {
-        warmUpError = nil
         Task { await models.download() }
     }
 
-    func deleteModel() throws {
+    /// 削除は、録音の入口を閉じ、読み込みの途中ならその終わりを待ってからファイルを消す（LocalModelManager.delete）。
+    func deleteModel() async throws {
         guard deletionAllowed else { throw LocalTranscriptionError(message: "使っている間は削除できません") }
-        try models.delete()
-        warmUpError = nil
+        try await models.delete()
     }
 
     /// ローカルを選んでいてモデルが使えるなら、裏で 1 秒の無音を認識させて読み込んでおく。
@@ -289,7 +289,6 @@ import VoiceInputLocal
         guard warmUpTask == nil, LocalModeRules.shouldWarmUp(engine: settings.engine, status: models.status)
         else { return }
         warmingUp = true
-        warmUpError = nil
         updateModelFlags()
         let transcriber = models.transcriber
         warmUpTask = Task { [weak self] in
@@ -299,7 +298,8 @@ import VoiceInputLocal
             } catch {
                 let message = (error as? LocalTranscriptionError)?.message ?? "\(error)"
                 NSLog("VoiceInput: ローカルのモデルを読み込めません: \(message)")
-                self?.warmUpError = message
+                // 失敗にして録音を断り、設定画面で理由を見せる（やり直すか削除するまで残る）
+                self?.models.loadFailed(message)
             }
             self?.warmingUp = false
             self?.warmUpTask = nil
@@ -397,7 +397,7 @@ import VoiceInputLocal
             var secureInput = false
             if case .confirm = action { secureInput = IsSecureEventInputEnabled() }
             let inputs = LocalModeRules.gateInputs(engine: settings.engine, hasAPIKey: hasAPIKey,
-                                                   modelStatus: models.status)
+                                                   modelStatus: models.status, warmingUp: warmingUp)
             let decision = gate.decide(action, hasAPIKey: inputs.hasAPIKey, secureInput: secureInput,
                                        localModelReady: inputs.localModelReady)
             if let forward = decision.forward, !session.handle(forward),
@@ -423,8 +423,14 @@ import VoiceInputLocal
             showOverlayMessage(.error("API キーが設定されていません"))
             openWindow?(.settings)
         case .localModelNotReady:
-            showOverlayMessage(.error("ローカルのモデルが使えません"))
-            openWindow?(.settings)
+            switch LocalModeRules.notReadyReaction(warmingUp: warmingUp) {
+            case .waitForWarmUp:
+                // 読み込みが終われば使えるので、設定画面は開かない
+                showOverlayMessage(.notice("ローカルのモデルを準備中です。少し待ってから話してください"))
+            case .openSettings:
+                showOverlayMessage(.error("ローカルのモデルが使えません"))
+                openWindow?(.settings)
+            }
         case .secureInput:
             showOverlayMessage(.notice("パスワード入力中は使えません"))
         case .busy:

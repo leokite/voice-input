@@ -38,11 +38,50 @@ import VoiceInputCore
             try await transcriber.transcribe(pcm: Data(count: 3200), languageHints: ["ja"], terms: [])
         }
     }
+
+    // 読めないトークナイザーで WhisperKit を作ると取得しに行くので、作る前に断る（ここで WhisperKit を作れば通信が起こりうる）
+    @Test func brokenTokenizerFailsBeforeCreatingWhisperKit() async throws {
+        let base = try ModelFixture.makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try ModelFixture.install(base: base, tokenizerConfig: "not json")
+        #expect(LocalModelLayout.isInstalled(base: base))
+        let transcriber = WhisperKitTranscriber(base: base)
+        await #expect(throws: LocalTranscriptionError(message: "ローカルのモデルが導入されていないか、壊れています")) {
+            try await transcriber.transcribe(pcm: Data(count: 3200), languageHints: ["ja"], terms: [])
+        }
+    }
+}
+
+/// モデルを使わずに、導入済みの形だけを temp に作る
+enum ModelFixture {
+    static func makeBase() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInputLocalTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    static func install(base: URL, tokenizerConfig: String = #"{"version":"1.0"}"#) throws {
+        let model = LocalModelLayout.modelFolder(base: base)
+        var files: [(URL, String)] = [(model.appendingPathComponent("config.json"), "{}")]
+        for name in ["AudioEncoder", "TextDecoder", "MelSpectrogram", "TextDecoderContextPrefill"] {
+            let dir = model.appendingPathComponent("\(name).mlmodelc")
+            files.append((dir.appendingPathComponent("coremldata.bin"), "x"))
+            files.append((dir.appendingPathComponent("weights/weight.bin"), "x"))
+        }
+        let tokenizer = LocalModelLayout.tokenizerFolder(base: base)
+        files.append((tokenizer.appendingPathComponent("tokenizer.json"), #"{"version":"1.0"}"#))
+        files.append((tokenizer.appendingPathComponent("tokenizer_config.json"), tokenizerConfig))
+        for (url, text) in files {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+    }
 }
 
 @MainActor
 @Suite struct LocalModelManagerTests {
-    @Test func deleteRemovesOnlyModelsFolder() throws {
+    @Test func deleteRemovesOnlyModelsFolder() async throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("LocalModelManagerTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: base) }
@@ -56,18 +95,66 @@ import VoiceInputCore
         }
 
         let manager = LocalModelManager(base: base)
-        try manager.delete()
+        try await manager.delete()
 
         #expect(!FileManager.default.fileExists(atPath: base.appendingPathComponent("models").path))
         #expect(FileManager.default.fileExists(atPath: other.path))
         #expect(manager.status == .notInstalled)
     }
 
-    @Test func deleteWithoutModelsSucceeds() throws {
+    @Test func deleteWithoutModelsSucceeds() async throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("LocalModelManagerTests-\(UUID().uuidString)", isDirectory: true)
         let manager = LocalModelManager(base: base)
-        try manager.delete()
+        try await manager.delete()
+        #expect(manager.status == .notInstalled)
+    }
+
+    @Test func installedModelIsReady() throws {
+        let base = try ModelFixture.makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try ModelFixture.install(base: base)
+        #expect(LocalModelManager(base: base).status == .ready)
+    }
+
+    @Test func brokenTokenizerIsNotReady() throws {
+        let base = try ModelFixture.makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try ModelFixture.install(base: base, tokenizerConfig: "not json")
+        let manager = LocalModelManager(base: base)
+        guard case .failed = manager.status else {
+            Issue.record("\(manager.status)")
+            return
+        }
+        manager.refresh()
+        #expect(manager.status != .ready)
+    }
+
+    @Test func loadFailureStaysVisibleUntilDeleted() async throws {
+        let base = try ModelFixture.makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try ModelFixture.install(base: base)
+        let manager = LocalModelManager(base: base)
+        manager.loadFailed("メモリが足りません")
+        guard case .failed(let reason) = manager.status else {
+            Issue.record("\(manager.status)")
+            return
+        }
+        #expect(reason.contains("メモリが足りません"))
+        // 設定画面を開いたときの見直しで消さない
+        manager.refresh()
+        #expect(manager.status == .failed(reason))
+        try await manager.delete()
+        #expect(manager.status == .notInstalled)
+        #expect(!LocalModelLayout.hasFiles(base: base))
+    }
+
+    @Test func loadFailureIsIgnoredUnlessReady() {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LocalModelManagerTests-\(UUID().uuidString)", isDirectory: true)
+        let manager = LocalModelManager(base: base)
+        // 削除の後に届いた読み込みの失敗で、未導入を失敗に変えない
+        manager.loadFailed("x")
         #expect(manager.status == .notInstalled)
     }
 }

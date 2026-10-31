@@ -15,15 +15,26 @@ public final class LocalModelManager: ObservableObject {
         refresh()
     }
 
-    /// ファイルを見て、未導入か使えるかにする（ダウンロードと準備の途中は変えない）
+    /// 削除の途中。録音の入口は閉じたまま、見直しやダウンロードで状態を戻さない。
+    private var deleting = false
+
+    /// ファイルを見て状態を決め直す（ダウンロードと準備の途中、失敗の理由は残す。LocalModeRules.refreshedStatus）
     public func refresh() {
-        switch status {
-        case .downloading, .preparing: return
-        default: status = LocalModelLayout.isInstalled(base: base) ? .ready : .notInstalled
-        }
+        guard !deleting else { return }
+        let installed = LocalModelLayout.isInstalled(base: base)
+        status = LocalModeRules.refreshedStatus(
+            current: status, hasFiles: LocalModelLayout.hasFiles(base: base), installed: installed,
+            tokenizerValid: installed && LocalModelLayout.tokenizerFilesAreValid(base: base))
+    }
+
+    /// 裏での読み込みに失敗した。使える状態のときだけ失敗にして、録音を断り理由を見せる。
+    public func loadFailed(_ message: String) {
+        guard status == .ready else { return }
+        status = .failed("読み込みに失敗しました: \(message)")
     }
 
     public func download() async {
+        guard !deleting else { return }
         switch status {
         case .downloading, .preparing: return
         default: break
@@ -46,7 +57,7 @@ public final class LocalModelManager: ObservableObject {
             status = .preparing
             // トークナイザーの取得と Core ML のコンパイルのため、一度読み込んで無音を認識する
             try await transcriber.prepareAfterDownload()
-            guard LocalModelLayout.isInstalled(base: base) else {
+            guard LocalModelLayout.isInstalled(base: base), LocalModelLayout.tokenizerFilesAreValid(base: base) else {
                 throw LocalTranscriptionError(message: "モデルのファイルがそろっていません")
             }
             status = .ready
@@ -55,19 +66,23 @@ public final class LocalModelManager: ObservableObject {
         }
     }
 
-    /// モデルとトークナイザー（どちらも `models/` の下）を消す
-    public func delete() throws {
+    /// モデルとトークナイザー（どちらも `models/` の下）を消す。
+    /// 先に未導入にして録音の入口を閉じ、読み込みの途中ならその終わりを待って手放してから消す
+    /// （読み込みの途中にファイルを消すと、WhisperKit がトークナイザーを取りに行くため）。
+    public func delete() async throws {
+        if deleting { throw LocalTranscriptionError(message: "削除の途中です") }
         switch status {
         case .downloading, .preparing: throw LocalTranscriptionError(message: "準備の途中は削除できません")
         default: break
         }
-        let models = base.appendingPathComponent("models", isDirectory: true)
-        if FileManager.default.fileExists(atPath: models.path) {
-            try FileManager.default.removeItem(at: models)
-        }
-        let transcriber = transcriber
-        Task { await transcriber.unload() }
+        deleting = true
         status = .notInstalled
+        defer {
+            deleting = false
+            status = .notInstalled
+            refresh()
+        }
+        try await transcriber.removeModels(at: base.appendingPathComponent("models", isDirectory: true))
     }
 
     private static func reason(_ error: Error) -> String {

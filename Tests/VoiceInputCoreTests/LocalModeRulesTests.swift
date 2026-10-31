@@ -8,21 +8,77 @@ import Testing
 
     @Test func sonioxPassesRealKeyAndIgnoresModel() {
         for status in allStatuses {
-            let yes = LocalModeRules.gateInputs(engine: .soniox, hasAPIKey: true, modelStatus: status)
-            #expect(yes.hasAPIKey && yes.localModelReady)
-            let no = LocalModeRules.gateInputs(engine: .soniox, hasAPIKey: false, modelStatus: status)
-            #expect(!no.hasAPIKey && no.localModelReady)
+            for warmingUp in [true, false] {
+                let yes = LocalModeRules.gateInputs(engine: .soniox, hasAPIKey: true, modelStatus: status,
+                                                    warmingUp: warmingUp)
+                #expect(yes.hasAPIKey && yes.localModelReady)
+                let no = LocalModeRules.gateInputs(engine: .soniox, hasAPIKey: false, modelStatus: status,
+                                                   warmingUp: warmingUp)
+                #expect(!no.hasAPIKey && no.localModelReady)
+            }
         }
     }
 
     @Test func localNeedsNoKeyButNeedsReadyModel() {
         for hasKey in [true, false] {
             for status in allStatuses {
-                let inputs = LocalModeRules.gateInputs(engine: .local, hasAPIKey: hasKey, modelStatus: status)
+                let inputs = LocalModeRules.gateInputs(engine: .local, hasAPIKey: hasKey, modelStatus: status,
+                                                       warmingUp: false)
                 #expect(inputs.hasAPIKey)
                 #expect(inputs.localModelReady == (status == .ready), "\(status)")
             }
         }
+    }
+
+    @Test func localWaitsWhileWarmingUp() {
+        // 読み込みの途中に録音すると、認識が時間内に終わらず声が捨てられるため
+        let inputs = LocalModeRules.gateInputs(engine: .local, hasAPIKey: false, modelStatus: .ready, warmingUp: true)
+        #expect(inputs.hasAPIKey)
+        #expect(!inputs.localModelReady)
+    }
+
+    @Test func notReadyWhileWarmingUpOnlyAsksToWait() {
+        #expect(LocalModeRules.notReadyReaction(warmingUp: true) == .waitForWarmUp)
+        #expect(LocalModeRules.notReadyReaction(warmingUp: false) == .openSettings)
+    }
+
+    @Test func refreshKeepsDownloadAndPreparation() {
+        for status: LocalModelStatus in [.downloading(fraction: 0.3), .preparing] {
+            #expect(LocalModeRules.refreshedStatus(current: status, hasFiles: false, installed: false,
+                                                   tokenizerValid: false) == status)
+            #expect(LocalModeRules.refreshedStatus(current: status, hasFiles: true, installed: true,
+                                                   tokenizerValid: true) == status)
+        }
+    }
+
+    @Test func refreshReadsFiles() {
+        for current: LocalModelStatus in [.notInstalled, .ready] {
+            #expect(LocalModeRules.refreshedStatus(current: current, hasFiles: true, installed: true,
+                                                   tokenizerValid: true) == .ready)
+            #expect(LocalModeRules.refreshedStatus(current: current, hasFiles: true, installed: false,
+                                                   tokenizerValid: false) == .notInstalled)
+            #expect(LocalModeRules.refreshedStatus(current: current, hasFiles: false, installed: false,
+                                                   tokenizerValid: false) == .notInstalled)
+        }
+    }
+
+    @Test func refreshReportsBrokenTokenizer() {
+        let status = LocalModeRules.refreshedStatus(current: .ready, hasFiles: true, installed: true, tokenizerValid: false)
+        guard case .failed(let reason) = status else {
+            Issue.record("\(status)")
+            return
+        }
+        #expect(reason.contains("トークナイザー"))
+    }
+
+    @Test func refreshKeepsFailureUntilFilesAreGone() {
+        // 理由はやり直すか削除するまで見せ続ける
+        for (installed, valid) in [(true, true), (true, false), (false, false)] {
+            #expect(LocalModeRules.refreshedStatus(current: .failed("x"), hasFiles: true, installed: installed,
+                                                   tokenizerValid: valid) == .failed("x"))
+        }
+        #expect(LocalModeRules.refreshedStatus(current: .failed("x"), hasFiles: false, installed: false,
+                                               tokenizerValid: false) == .notInstalled)
     }
 
     @Test func deleteAllowedOnlyWhenNothingUsesTheModel() {

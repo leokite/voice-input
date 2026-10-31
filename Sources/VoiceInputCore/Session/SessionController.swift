@@ -411,6 +411,10 @@ public enum SessionError: Equatable, Sendable {
         if !r.usedTerms.isEmpty { onTermsUsed(r.usedTerms) }
         recording = nil
         if let failure = r.failure {
+            // 画面には種類だけを出すので、ローカルの認識が失敗した本当の理由はログに残す
+            if let local = failure as? LocalTranscriptionError {
+                NSLog("VoiceInput: ローカルの文字起こしに失敗しました: %@", local.message)
+            }
             showError(SessionError(failure))
         } else if r.blocked == .appSwitched {
             show(.notice("アプリが切り替わったため履歴に保存しました"))

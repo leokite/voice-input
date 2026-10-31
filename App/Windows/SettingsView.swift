@@ -50,9 +50,6 @@ struct SettingsView: View {
                 if case .failed(let reason) = coordinator.modelStatus {
                     Text(reason).foregroundStyle(.red)
                 }
-                if let warmUpError = coordinator.warmUpError {
-                    Text("読み込みに失敗しました: \(warmUpError)").foregroundStyle(.red)
-                }
                 HStack {
                     Button("ダウンロード（約 1.5GB）") {
                         modelError = nil
@@ -230,11 +227,13 @@ struct SettingsView: View {
     }
 
     private func deleteModel() {
-        do {
-            try coordinator.deleteModel()
-            modelError = nil
-        } catch {
-            modelError = "削除できません: \((error as? LocalTranscriptionError)?.message ?? error.localizedDescription)"
+        Task {
+            do {
+                try await coordinator.deleteModel()
+                modelError = nil
+            } catch {
+                modelError = "削除できません: \((error as? LocalTranscriptionError)?.message ?? error.localizedDescription)"
+            }
         }
     }
 

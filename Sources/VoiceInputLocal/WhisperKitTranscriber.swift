@@ -33,9 +33,9 @@ public final class WhisperKitTranscriber: LocalTranscriber, Sendable {
         }
     }
 
-    /// 読み込んだモデルを手放す（削除の前に呼ぶ）
-    func unload() async {
-        await engine.unload()
+    /// 読み込みの途中なら終わるのを待ち、モデルを手放してからファイルを消す
+    func removeModels(at folder: URL) async throws {
+        try await engine.unloadAndRemove(folder)
     }
 
     /// 16kHz、モノラル、s16le を -1...1 の Float に直す
@@ -91,20 +91,32 @@ actor WhisperKitEngine {
             verbose: false,
             download: false
         )
-        // 呼び出し側が取り消されても読み込みは最後まで続け、次の呼び出しで使う
+        // 呼び出し側が取り消されても読み込みは最後まで続け、次の呼び出しで使う。
+        // 終わりの印は読み込み自身が消す（待つ側がいなくても、削除がその終わりを見られるように）
         let task = Task {
-            let loaded = try await WhisperKit(config)
-            self.kit = loaded
+            defer { self.loading = nil }
+            self.kit = try await WhisperKit(config)
         }
         loading = task
-        defer { loading = nil }
         try await task.value
     }
 
     func unload() async {
-        _ = try? await loading?.value
-        await kit?.unloadModels()
-        kit = nil
+        while let loading { _ = try? await loading.value }
+        if let kit {
+            self.kit = nil
+            await kit.unloadModels()
+        }
+    }
+
+    /// 読み込みも、読み込んだモデルもない状態にしてから、await をはさまずにファイルを消す（読み込みが割り込まない）
+    func unloadAndRemove(_ folder: URL) async throws {
+        while loading != nil || kit != nil {
+            await unload()
+        }
+        if FileManager.default.fileExists(atPath: folder.path) {
+            try FileManager.default.removeItem(at: folder)
+        }
     }
 
     func transcribe(samples: [Float], languageHints: [String], terms: [String]) async throws -> String {
@@ -113,13 +125,15 @@ actor WhisperKitEngine {
         guard let kit else { throw LocalTranscriptionError(message: "ローカルのモデルを読み込めませんでした") }
         try Task.checkCancellation()
 
+        // "ja-JP" のようなヒントは、Whisper の言語コード（"ja"）にそろえてから使う
+        let hints = LanguageChoice.normalized(languageHints)
         let language: String?
-        if languageHints.count > 1 {
+        if hints.count > 1 {
             let detected = try await kit.detectLangauge(audioArray: samples)
-            language = LanguageChoice.pick(hints: languageHints, probabilities: detected.langProbs)
+            language = LanguageChoice.pick(hints: hints, probabilities: detected.langProbs)
             try Task.checkCancellation()
         } else {
-            language = languageHints.first
+            language = hints.first
         }
 
         var promptTokens: [Int] = []
