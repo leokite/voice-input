@@ -26,24 +26,24 @@ import Testing
     }
 
     @Test func deleteAllowedOnlyWhenNothingUsesTheModel() {
-        #expect(LocalModeRules.canDeleteModel(status: .ready, sessionState: .idle, keysQuiet: true, warmingUp: false))
-        #expect(LocalModeRules.canDeleteModel(status: .failed("x"), sessionState: .error("e"), keysQuiet: true,
+        #expect(LocalModeRules.canDeleteModel(hasFiles: true, status: .ready, sessionState: .idle, keysQuiet: true, warmingUp: false))
+        #expect(LocalModeRules.canDeleteModel(hasFiles: true, status: .failed("x"), sessionState: .error("e"), keysQuiet: true,
                                               warmingUp: false))
-        #expect(LocalModeRules.canDeleteModel(status: .ready, sessionState: .notice("n"), keysQuiet: true,
+        #expect(LocalModeRules.canDeleteModel(hasFiles: true, status: .ready, sessionState: .notice("n"), keysQuiet: true,
                                               warmingUp: false))
-        // 消すものがない、または準備の途中
-        for status: LocalModelStatus in [.notInstalled, .downloading(fraction: 0.1), .preparing] {
-            #expect(!LocalModeRules.canDeleteModel(status: status, sessionState: .idle, keysQuiet: true,
-                                                   warmingUp: false))
+        // 準備の途中
+        for status: LocalModelStatus in [.downloading(fraction: 0.1), .preparing] {
+            #expect(!LocalModeRules.canDeleteModel(hasFiles: true, status: status, sessionState: .idle,
+                                                   keysQuiet: true, warmingUp: false))
         }
         // 録音中、処理中、押下の途中、読み込み中
-        #expect(!LocalModeRules.canDeleteModel(status: .ready, sessionState: .recording(level: 0, preview: ""),
+        #expect(!LocalModeRules.canDeleteModel(hasFiles: true, status: .ready, sessionState: .recording(level: 0, preview: ""),
                                                keysQuiet: true, warmingUp: false))
-        #expect(!LocalModeRules.canDeleteModel(status: .ready, sessionState: .processing, keysQuiet: true,
+        #expect(!LocalModeRules.canDeleteModel(hasFiles: true, status: .ready, sessionState: .processing, keysQuiet: true,
                                                warmingUp: false))
-        #expect(!LocalModeRules.canDeleteModel(status: .ready, sessionState: .idle, keysQuiet: false,
+        #expect(!LocalModeRules.canDeleteModel(hasFiles: true, status: .ready, sessionState: .idle, keysQuiet: false,
                                                warmingUp: false))
-        #expect(!LocalModeRules.canDeleteModel(status: .ready, sessionState: .idle, keysQuiet: true,
+        #expect(!LocalModeRules.canDeleteModel(hasFiles: true, status: .ready, sessionState: .idle, keysQuiet: true,
                                                warmingUp: true))
     }
 
@@ -67,5 +67,41 @@ import Testing
         settings.engine = .soniox
         settings.useCloudLocator = false
         #expect(!LocalModeRules.usesCloudLocator(settings: settings, hasOpenAIKey: true))
+    }
+
+    @Test func notInstalledCanDeleteOnlyLeftovers() {
+        #expect(LocalModeRules.canDeleteModel(hasFiles: true, status: .notInstalled, sessionState: .idle,
+                                              keysQuiet: true, warmingUp: false))
+        #expect(!LocalModeRules.canDeleteModel(hasFiles: false, status: .notInstalled, sessionState: .idle,
+                                               keysQuiet: true, warmingUp: false))
+        #expect(!LocalModeRules.canDeleteModel(hasFiles: true, status: .notInstalled, sessionState: .processing,
+                                               keysQuiet: true, warmingUp: false))
+    }
+
+    @Test func sonioxKeyNeededOnlyForSoniox() {
+        #expect(LocalModeRules.needsAPIKey(engine: .soniox, hasAPIKey: false))
+        #expect(!LocalModeRules.needsAPIKey(engine: .soniox, hasAPIKey: true))
+        #expect(!LocalModeRules.needsAPIKey(engine: .local, hasAPIKey: false))
+        #expect(!LocalModeRules.needsAPIKey(engine: .local, hasAPIKey: true))
+    }
+
+    @Test func setupNeededAtLaunch() {
+        for status in allStatuses {
+            #expect(LocalModeRules.needsSetup(engine: .soniox, hasAPIKey: false, modelStatus: status))
+            #expect(!LocalModeRules.needsSetup(engine: .soniox, hasAPIKey: true, modelStatus: status))
+            for hasKey in [true, false] {
+                #expect(LocalModeRules.needsSetup(engine: .local, hasAPIKey: hasKey, modelStatus: status)
+                        == (status != .ready), "\(status)")
+            }
+        }
+    }
+
+    @Test func engineSwitchOnlyWhenNothingIsRecording() {
+        #expect(LocalModeRules.canSwitchEngine(sessionState: .idle, keysQuiet: true))
+        #expect(LocalModeRules.canSwitchEngine(sessionState: .error("e"), keysQuiet: true))
+        #expect(LocalModeRules.canSwitchEngine(sessionState: .notice("n"), keysQuiet: true))
+        #expect(!LocalModeRules.canSwitchEngine(sessionState: .recording(level: 0, preview: ""), keysQuiet: true))
+        #expect(!LocalModeRules.canSwitchEngine(sessionState: .processing, keysQuiet: true))
+        #expect(!LocalModeRules.canSwitchEngine(sessionState: .idle, keysQuiet: false))
     }
 }

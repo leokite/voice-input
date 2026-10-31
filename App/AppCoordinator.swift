@@ -26,6 +26,10 @@ import VoiceInputLocal
     @Published private(set) var warmingUp = false
     /// 今モデルを消してよいか。録音の音量のたびに画面を描き直さないよう、変わったときだけ更新する。
     @Published private(set) var canDeleteModel = false
+    /// 今エンジンを切り替えてよいか（録音や処理、押下の途中は切り替えない）。
+    @Published private(set) var canSwitchEngine = true
+    /// 裏での読み込みに失敗した理由。
+    @Published private(set) var warmUpError: String?
     /// 案内の画面を開く。AppDelegate が WindowPresenter につなぐ。
     var openWindow: ((AppWindow) -> Void)?
 
@@ -40,8 +44,10 @@ import VoiceInputLocal
     private var session: SessionController!
     private var keyMonitor: GlobalKeyMonitor!
     private let overlay = OverlayPanel()
-    private let models = LocalModelManager(
-        base: LocalModelLayout.downloadBase(supportDirectory: AppPaths.supportDirectory))
+    private static let modelBase = LocalModelLayout.downloadBase(supportDirectory: AppPaths.supportDirectory)
+    private let models = LocalModelManager(base: AppCoordinator.modelBase)
+    /// 保存場所にファイルが残っているか（未導入でも、途中までのダウンロードなら削除できるようにする）。
+    private var modelHasFiles = false
     private var warmUpTask: Task<Void, Never>?
     /// クラウドの API キーの有無を確かめた。ローカルの間はキーチェーンを読まないので、Soniox に切り替えたときに確かめる。
     private var cloudKeysChecked = false
@@ -101,7 +107,8 @@ import VoiceInputLocal
         session.onError = { [unowned self] error in self.guide(for: error) }
         modelStatusSink = models.$status.sink { [weak self] status in
             self?.modelStatus = status
-            self?.updateCanDeleteModel()
+            self?.modelHasFiles = LocalModelLayout.hasFiles(base: AppCoordinator.modelBase)
+            self?.updateModelFlags()
         }
         if settings.allowsCloud { checkCloudKeys() }
 
@@ -183,6 +190,9 @@ import VoiceInputLocal
     // MARK: - Settings, glossary, history
 
     func updateSettings(_ new: AppSettings) {
+        var new = new
+        // 録音の途中にエンジンを変えない（画面でも選べなくしている）
+        if new.engine != settings.engine, !canSwitchEngine { new.engine = settings.engine }
         guard new != settings else { return }
         let engineChanged = new.engine != settings.engine
         settings = new
@@ -232,28 +242,45 @@ import VoiceInputLocal
 
     // MARK: - Local model
 
-    /// 録音や処理、押下の途中、裏での読み込みの間は消さない（使っている最中にファイルを消さないため）。
-    private var deletionAllowed: Bool {
-        LocalModeRules.canDeleteModel(status: modelStatus, sessionState: sessionState, keysQuiet: gate.isQuiet,
-                                      warmingUp: warmingUp)
+    /// Soniox のキーが要るのに無い（ローカルのときは要らない）。
+    var needsAPIKey: Bool {
+        LocalModeRules.needsAPIKey(engine: settings.engine, hasAPIKey: hasAPIKey)
     }
 
-    private func updateCanDeleteModel() {
+    /// 起動時に設定画面を開くべきか。start() の後（モデルの状態をファイルから読み直した後）に見る。
+    var needsSetup: Bool {
+        LocalModeRules.needsSetup(engine: settings.engine, hasAPIKey: hasAPIKey, modelStatus: models.status)
+    }
+
+    /// 録音や処理、押下の途中、裏での読み込みの間は消さない（使っている最中にファイルを消さないため）。
+    private var deletionAllowed: Bool {
+        LocalModeRules.canDeleteModel(hasFiles: modelHasFiles, status: modelStatus, sessionState: sessionState,
+                                      keysQuiet: gate.isQuiet, warmingUp: warmingUp)
+    }
+
+    /// 録音の音量のたびに画面を描き直さないよう、変わったときだけ書き換える。
+    private func updateModelFlags() {
         if canDeleteModel != deletionAllowed { canDeleteModel = deletionAllowed }
+        let switchable = LocalModeRules.canSwitchEngine(sessionState: sessionState, keysQuiet: gate.isQuiet)
+        if canSwitchEngine != switchable { canSwitchEngine = switchable }
     }
 
     func refreshModelStatus() {
         models.refresh()
+        modelHasFiles = LocalModelLayout.hasFiles(base: Self.modelBase)
+        updateModelFlags()
     }
 
     /// 通信するのはこの操作だけ。
     func downloadModel() {
+        warmUpError = nil
         Task { await models.download() }
     }
 
     func deleteModel() throws {
         guard deletionAllowed else { throw LocalTranscriptionError(message: "使っている間は削除できません") }
         try models.delete()
+        warmUpError = nil
     }
 
     /// ローカルを選んでいてモデルが使えるなら、裏で 1 秒の無音を認識させて読み込んでおく。
@@ -262,14 +289,21 @@ import VoiceInputLocal
         guard warmUpTask == nil, LocalModeRules.shouldWarmUp(engine: settings.engine, status: models.status)
         else { return }
         warmingUp = true
-        updateCanDeleteModel()
+        warmUpError = nil
+        updateModelFlags()
         let transcriber = models.transcriber
         warmUpTask = Task { [weak self] in
-            // 言語の判定を省くため、日本語と決めて認識する。失敗は録音のときに知らせる。
-            _ = try? await transcriber.transcribe(pcm: Data(count: 32000), languageHints: ["ja"], terms: [])
+            // 言語の判定を省くため、日本語と決めて認識する。
+            do {
+                _ = try await transcriber.transcribe(pcm: Data(count: 32000), languageHints: ["ja"], terms: [])
+            } catch {
+                let message = (error as? LocalTranscriptionError)?.message ?? "\(error)"
+                NSLog("VoiceInput: ローカルのモデルを読み込めません: \(message)")
+                self?.warmUpError = message
+            }
             self?.warmingUp = false
             self?.warmUpTask = nil
-            self?.updateCanDeleteModel()
+            self?.updateModelFlags()
         }
     }
 
@@ -316,7 +350,7 @@ import VoiceInputLocal
         if gate.buffering { session.handle(.cancel) }
         gate.reset()
         keyMachine.reset()
-        updateCanDeleteModel()
+        updateModelFlags()
     }
 
     // MARK: - Keys
@@ -352,7 +386,7 @@ import VoiceInputLocal
         if gate.buffering { session.handle(.cancel) }
         gate.reset()
         keyMachine.reset()
-        updateCanDeleteModel()
+        updateModelFlags()
     }
 
     /// 押した時点ではキーチェーンを読まない（確認のダイアログが普段の入力中に出ないよう、保存の有無だけを見る）。
@@ -377,7 +411,7 @@ import VoiceInputLocal
             }
         }
         rebuildKeysIfQuiet()
-        updateCanDeleteModel()
+        updateModelFlags()
     }
 
     /// 録音を始めない。キーの状態を戻し、理由を短く知らせる。
@@ -475,7 +509,7 @@ import VoiceInputLocal
         overlay.show(state)
         if case .error = state { keyMachine.reset() }
         rebuildKeysIfQuiet()
-        updateCanDeleteModel()
+        updateModelFlags()
     }
 
     /// エラーが出たら、直し方の分かる場所を開く。SessionController はエラー 1 回につき 1 回だけ呼ぶ。

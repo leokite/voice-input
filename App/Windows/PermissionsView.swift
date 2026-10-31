@@ -38,9 +38,13 @@ struct PermissionsView: View {
                 }
             }
             Section("API キー") {
-                row(ok: coordinator.hasAPIKey, okText: "設定されています", ngText: "設定されていません")
-                if !coordinator.hasAPIKey {
-                    Button("設定を開く", action: openSettings)
+                if coordinator.settings.allowsCloud {
+                    row(ok: !coordinator.needsAPIKey, okText: "設定されています", ngText: "設定されていません")
+                    if coordinator.needsAPIKey {
+                        Button("設定を開く", action: openSettings)
+                    }
+                } else {
+                    Text("ローカルでは使いません").foregroundStyle(.secondary)
                 }
             }
         }

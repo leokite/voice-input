@@ -33,6 +33,10 @@ struct SettingsView: View {
                     Text("Soniox").tag(TranscriptionEngine.soniox)
                     Text("ローカル（オフライン）").tag(TranscriptionEngine.local)
                 }
+                .disabled(!coordinator.canSwitchEngine)
+                if !coordinator.canSwitchEngine {
+                    Text("録音や処理の間は切り替えられません").foregroundStyle(.secondary)
+                }
                 if isLocal {
                     Text("音声も文字も、この Mac の外へは送りません。").foregroundStyle(.secondary)
                 }
@@ -45,6 +49,9 @@ struct SettingsView: View {
                 }
                 if case .failed(let reason) = coordinator.modelStatus {
                     Text(reason).foregroundStyle(.red)
+                }
+                if let warmUpError = coordinator.warmUpError {
+                    Text("読み込みに失敗しました: \(warmUpError)").foregroundStyle(.red)
                 }
                 HStack {
                     Button("ダウンロード（約 1.5GB）") {
@@ -135,7 +142,10 @@ struct SettingsView: View {
             }
 
             Section("用語集") {
-                if coordinator.glossary.contextTerms().truncated {
+                if isLocal {
+                    Text("用語は音声認識のヒントとして使います（ローカルでは長さに上限があります）")
+                        .foregroundStyle(.secondary)
+                } else if coordinator.glossary.contextTerms().truncated {
                     Label("用語が多すぎて、一部は音声認識のヒントに送られていません。古い用語を整理してください。",
                           systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)

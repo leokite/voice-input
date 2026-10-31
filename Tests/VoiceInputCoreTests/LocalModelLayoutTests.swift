@@ -192,4 +192,12 @@ import Testing
         try installModel(base: base)
         #expect(!LocalModelLayout.tokenizerFilesAreValid(base: base))
     }
+
+    @Test func leftoverFilesAreDetected() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        #expect(!LocalModelLayout.hasFiles(base: base))
+        try touch(LocalModelLayout.modelFolder(base: base).appendingPathComponent("config.json"), directory: false)
+        #expect(LocalModelLayout.hasFiles(base: base))
+    }
 }

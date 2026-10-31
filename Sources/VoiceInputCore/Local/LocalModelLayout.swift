@@ -36,6 +36,11 @@ public enum LocalModelLayout {
     // tokenizer_config.json が無いと WhisperKit はトークナイザーを取得しに行くので、両方を必須にする
     private static let requiredTokenizerFiles = ["tokenizer.json", "tokenizer_config.json"]
 
+    /// 保存場所に何か残っているか（途中までのダウンロードも含む）。削除はこの `models/` を消す。
+    public static func hasFiles(base: URL) -> Bool {
+        FileManager.default.fileExists(atPath: base.appendingPathComponent("models", isDirectory: true).path)
+    }
+
     /// モデルとトークナイザーの両方が中身までそろっているときだけ true（途中までの取得は未導入扱い）
     public static func isInstalled(base: URL) -> Bool {
         let model = modelFolder(base: base)
