@@ -164,10 +164,7 @@ struct SettingsView: View {
                         Text("キーがないので、今は読みの近さだけで探します。").foregroundStyle(.orange)
                     }
                 }
-                switch coordinator.judgeAvailability {
-                case .available:
-                    Text("端末内AIで置き換えを判断します").foregroundStyle(.secondary)
-                case .unavailable(let reason):
+                if case .unavailable(let reason) = coordinator.judgeAvailability {
                     Text(reason).foregroundStyle(.orange)
                 }
             }
