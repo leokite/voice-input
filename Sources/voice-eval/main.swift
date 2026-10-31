@@ -6,6 +6,7 @@ import VoiceInputLocal
 struct EvalCase: Decodable {
     let audio: String
     let expected: String
+    let group: String?
 }
 
 struct EvalFailure: Error, CustomStringConvertible {
@@ -179,3 +180,24 @@ for (index, c) in cases.enumerated() {
 let target = engine == "local" ? 0.91 : 0.95
 let mean = scores.isEmpty ? 0 : scores.reduce(0, +) / Double(scores.count)
 print("mean: \(String(format: "%.3f", mean))  target \(String(format: "%.2f", target)): \(mean >= target ? "PASS" : "FAIL")")
+
+// group が付いたケースがあるときだけ、グループごとの平均を出す
+let groupMeans = GroupMeans.compute(scores: scores, groups: cases.map(\.group))
+if !groupMeans.isEmpty {
+    for entry in groupMeans {
+        print("group \(entry.group): \(String(format: "%.3f", entry.mean))")
+    }
+    if engine == "local" {
+        // 設計書 9 の合格基準（ja / en / mixed / 全体）
+        let bars: [(name: String, value: Double, bar: Double)] = [
+            ("ja", groupMeans.first { $0.group == "ja" }?.mean ?? 0, 0.97),
+            ("en", groupMeans.first { $0.group == "en" }?.mean ?? 0, 0.97),
+            ("mixed", groupMeans.first { $0.group == "mixed" }?.mean ?? 0, 0.85),
+            ("overall", mean, 0.91),
+        ]
+        for b in bars {
+            print("local bar \(b.name) >= \(String(format: "%.2f", b.bar)): \(b.value >= b.bar ? "PASS" : "FAIL")")
+        }
+        print("local acceptance: \(bars.allSatisfy { $0.value >= $0.bar } ? "PASS" : "FAIL")")
+    }
+}
