@@ -13,6 +13,9 @@ struct SettingsView: View {
     @State private var languageText = ""
     @State private var newFiller = ""
     @State private var launchError: String?
+    @State private var modelError: String?
+
+    private var isLocal: Bool { coordinator.settings.engine == .local }
 
     private func binding<T>(_ keyPath: WritableKeyPath<AppSettings, T>) -> Binding<T> {
         Binding(get: { coordinator.settings[keyPath: keyPath] },
@@ -25,19 +28,59 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("API キー") {
-                SecureField("Soniox API キー", text: $apiKeyInput)
-                HStack {
-                    Button("保存") { saveKey() }
-                        .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("削除", role: .destructive) {
-                        coordinator.deleteAPIKey()
-                        apiKeyInput = ""
-                    }
-                    .disabled(!coordinator.hasAPIKey)
-                    if coordinator.hasAPIKey { Text("保存済み").foregroundStyle(.secondary) }
+            Section("文字起こし") {
+                Picker("文字起こし", selection: binding(\.engine)) {
+                    Text("Soniox").tag(TranscriptionEngine.soniox)
+                    Text("ローカル（オフライン）").tag(TranscriptionEngine.local)
                 }
-                if let apiKeyError { Text(apiKeyError).foregroundStyle(.red) }
+                .disabled(!coordinator.canSwitchEngine)
+                if !coordinator.canSwitchEngine {
+                    Text("録音や処理の間は切り替えられません").foregroundStyle(.secondary)
+                }
+                if isLocal {
+                    Text("音声も文字も、この Mac の外へは送りません。").foregroundStyle(.secondary)
+                }
+            }
+
+            Section("ローカルのモデル") {
+                LabeledContent("状態") { Text(modelStatusText) }
+                if case .downloading(let fraction) = coordinator.modelStatus {
+                    ProgressView(value: fraction)
+                }
+                if case .failed(let reason) = coordinator.modelStatus {
+                    Text(reason).foregroundStyle(.red)
+                }
+                HStack {
+                    Button("ダウンロード（約 1.5GB）") {
+                        modelError = nil
+                        coordinator.downloadModel()
+                    }
+                    .disabled(!canDownloadModel)
+                    Button("削除", role: .destructive) { deleteModel() }
+                        .disabled(!coordinator.canDeleteModel)
+                }
+                Text("ダウンロードは約 1.5GB です。通信するのはこのボタンを押したときだけです。")
+                    .foregroundStyle(.secondary)
+                if let modelError { Text(modelError).foregroundStyle(.red) }
+            }
+
+            Section("API キー") {
+                if isLocal {
+                    Text("ローカルでは使いません").foregroundStyle(.secondary)
+                } else {
+                    SecureField("Soniox API キー", text: $apiKeyInput)
+                    HStack {
+                        Button("保存") { saveKey() }
+                            .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("削除", role: .destructive) {
+                            coordinator.deleteAPIKey()
+                            apiKeyInput = ""
+                        }
+                        .disabled(!coordinator.hasAPIKey)
+                        if coordinator.hasAPIKey { Text("保存済み").foregroundStyle(.secondary) }
+                    }
+                    if let apiKeyError { Text(apiKeyError).foregroundStyle(.red) }
+                }
             }
 
             Section("キー") {
@@ -53,9 +96,14 @@ struct SettingsView: View {
             }
 
             Section("入力") {
-                Picker("文字の入れ方", selection: binding(\.insertionMode)) {
+                // ローカルのときは選べなくする。保存した値は変えず、Soniox に戻せば元の設定が効く。
+                Picker("文字の入れ方", selection: isLocal ? .constant(.batch) : binding(\.insertionMode)) {
                     Text("話し終えてからまとめて").tag(InsertionMode.batch)
                     Text("文の区切りごと").tag(InsertionMode.realtime)
+                }
+                .disabled(isLocal)
+                if isLocal {
+                    Text("ローカルでは、話し終えてからまとめて入力します").foregroundStyle(.secondary)
                 }
                 TextField("言語のヒント（例: ja, en）", text: $languageText)
                     .onSubmit(commitLanguage)
@@ -91,7 +139,10 @@ struct SettingsView: View {
             }
 
             Section("用語集") {
-                if coordinator.glossary.contextTerms().truncated {
+                if isLocal {
+                    Text("用語は音声認識のヒントとして使います（ローカルでは長さに上限があります）")
+                        .foregroundStyle(.secondary)
+                } else if coordinator.glossary.contextTerms().truncated {
                     Label("用語が多すぎて、一部は音声認識のヒントに送られていません。古い用語を整理してください。",
                           systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -100,8 +151,15 @@ struct SettingsView: View {
                 }
                 ShortcutRecorderRow(title: "直した単語を登録するキー", shortcut: binding(\.glossaryShortcut),
                                     coordinator: coordinator)
-                Toggle("外部AI（OpenAI）で置き換え元を探す", isOn: binding(\.useCloudLocator))
-                if coordinator.settings.useCloudLocator {
+                if isLocal {
+                    // 設定とキーは消さない。Soniox に戻せば元の設定が効く。
+                    LabeledContent("外部AI（OpenAI）で置き換え元を探す") {
+                        Text("オフラインモードでは使えません").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Toggle("外部AI（OpenAI）で置き換え元を探す", isOn: binding(\.useCloudLocator))
+                }
+                if !isLocal, coordinator.settings.useCloudLocator {
                     Text("単語だけを選んだときなどに、直前の音声入力の文と直した語を OpenAI に送ります。")
                         .foregroundStyle(.secondary)
                     TextField("モデル名", text: $modelInput, prompt: Text("例: gpt-6-luna"))
@@ -145,7 +203,38 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { languageText = LanguageHints.format(coordinator.settings.languageHints) }
+        .onAppear {
+            languageText = LanguageHints.format(coordinator.settings.languageHints)
+            coordinator.refreshModelStatus()
+        }
+    }
+
+    private var modelStatusText: String {
+        switch coordinator.modelStatus {
+        case .notInstalled: "未導入"
+        case .downloading(let fraction): "ダウンロード中（\(Int(fraction * 100))%）"
+        case .preparing: "準備中（数分かかることがあります）"
+        case .ready: coordinator.warmingUp ? "使える（読み込み中）" : "使える"
+        case .failed: "失敗"
+        }
+    }
+
+    private var canDownloadModel: Bool {
+        switch coordinator.modelStatus {
+        case .notInstalled, .failed: true
+        case .downloading, .preparing, .ready: false
+        }
+    }
+
+    private func deleteModel() {
+        Task {
+            do {
+                try await coordinator.deleteModel()
+                modelError = nil
+            } catch {
+                modelError = "削除できません: \((error as? LocalTranscriptionError)?.message ?? error.localizedDescription)"
+            }
+        }
     }
 
     private var launchBinding: Binding<Bool> {

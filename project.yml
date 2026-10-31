@@ -13,6 +13,9 @@ targets:
     sources: [App]
     dependencies:
       - package: VoiceInputCore
+        product: VoiceInputCore
+      - package: VoiceInputCore
+        product: VoiceInputLocal
     configFiles:
       Debug: Local.xcconfig
       Release: Local.xcconfig

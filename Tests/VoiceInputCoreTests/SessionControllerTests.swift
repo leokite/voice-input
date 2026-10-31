@@ -20,12 +20,12 @@ import Testing
     private var stateWaiters: [(state: SessionState, from: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private(set) var controller: SessionController!
 
-    init() {
+    init(sessions: TranscriptionSessionFactory? = nil) {
         factory = FakeFactory(clock: clock)
         let clock = clock
         controller = SessionController(
             audio: audio,
-            sessions: factory,
+            sessions: sessions ?? factory,
             inserter: inserter,
             frontmost: frontmost,
             settings: { [unowned self] in self.settings },
@@ -303,6 +303,21 @@ struct SessionControllerTests {
         h.session.fail(SonioxError.connectionClosed)
         await h.controller.waitUntilIdle()
         #expect(h.errors == [.network])
+    }
+
+    @Test func usesSessionFinalizeTimeout() async {
+        let h = Harness()
+        h.confirm()
+        h.session.finalizeTimeout = .seconds(60)
+        await h.stop()
+        await h.session.waitFor("finalize")
+        await h.clock.waitForSleeper(.seconds(60))
+        h.clock.advance(by: .seconds(5.1))
+        #expect(h.states.last == .processing)
+        h.session.push(.fin)
+        await h.controller.waitUntilIdle()
+        #expect(h.errors.isEmpty)
+        #expect(h.states.last == .idle)
     }
 
     @Test func finTimeoutAfterFiveSeconds() async {

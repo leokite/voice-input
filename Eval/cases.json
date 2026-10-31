@@ -1,82 +1,102 @@
 [
   {
     "audio": "001.pcm",
-    "expected": "今日はいい天気ですね。散歩に行きましょう。"
+    "expected": "今日はいい天気ですね。散歩に行きましょう。",
+    "group": "ja"
   },
   {
     "audio": "002.pcm",
-    "expected": "会議は午後三時から始まります。"
+    "expected": "会議は午後三時から始まります。",
+    "group": "ja"
   },
   {
     "audio": "003.pcm",
-    "expected": "明日の朝までに資料を送ってください。"
+    "expected": "明日の朝までに資料を送ってください。",
+    "group": "ja"
   },
   {
     "audio": "004.pcm",
-    "expected": "新しいプロジェクトの進捗を確認したいです。"
+    "expected": "新しいプロジェクトの進捗を確認したいです。",
+    "group": "ja"
   },
   {
     "audio": "005.pcm",
-    "expected": "この問題については来週もう一度話し合いましょう。"
+    "expected": "この問題については来週もう一度話し合いましょう。",
+    "group": "ja"
   },
   {
     "audio": "006.pcm",
-    "expected": "Please send me the report by tomorrow morning."
+    "expected": "Please send me the report by tomorrow morning.",
+    "group": "en"
   },
   {
     "audio": "007.pcm",
-    "expected": "The meeting has been moved to three o'clock."
+    "expected": "The meeting has been moved to three o'clock.",
+    "group": "en"
   },
   {
     "audio": "008.pcm",
-    "expected": "I would like to check the progress of the new project."
+    "expected": "I would like to check the progress of the new project.",
+    "group": "en"
   },
   {
     "audio": "009.pcm",
-    "expected": "Thank you for your help with this issue."
+    "expected": "Thank you for your help with this issue.",
+    "group": "en"
   },
   {
     "audio": "010.pcm",
-    "expected": "Let us discuss this problem again next week."
+    "expected": "Let us discuss this problem again next week.",
+    "group": "en"
   },
   {
     "audio": "011.pcm",
-    "expected": "GitHub にプルリクエストを出しました。"
+    "expected": "GitHub にプルリクエストを出しました。",
+    "group": "mixed"
   },
   {
     "audio": "012.pcm",
-    "expected": "明日の meeting は午前十時からです。"
+    "expected": "明日の meeting は午前十時からです。",
+    "group": "mixed"
   },
   {
     "audio": "013.pcm",
-    "expected": "Slack でメッセージを送っておきます。"
+    "expected": "Slack でメッセージを送っておきます。",
+    "group": "mixed"
   },
   {
     "audio": "014.pcm",
-    "expected": "この bug は来週の release までに直します。"
+    "expected": "この bug は来週の release までに直します。",
+    "group": "mixed"
   },
   {
     "audio": "015.pcm",
-    "expected": "Google Calendar に予定を追加してください。"
+    "expected": "Google Calendar に予定を追加してください。",
+    "group": "mixed"
   },
   {
     "audio": "016.pcm",
-    "expected": "Swift で async await を使って非同期処理を書きます。"
+    "expected": "Swift で async await を使って非同期処理を書きます。",
+    "group": "mixed"
   },
   {
     "audio": "017.pcm",
-    "expected": "Docker コンテナを再起動してから API を確認します。"
+    "expected": "Docker コンテナを再起動してから API を確認します。",
+    "group": "mixed"
   },
   {
     "audio": "018.pcm",
-    "expected": "TypeScript の型エラーを修正してコミットしました。"
+    "expected": "TypeScript の型エラーを修正してコミットしました。",
+    "group": "mixed"
   },
   {
     "audio": "019.pcm",
-    "expected": "Kubernetes のデプロイに失敗したのでログを調べます。"
+    "expected": "Kubernetes のデプロイに失敗したのでログを調べます。",
+    "group": "mixed"
   },
   {
     "audio": "020.pcm",
-    "expected": "main ブランチにマージする前に CI が通るか確認します。"
+    "expected": "main ブランチにマージする前に CI が通るか確認します。",
+    "group": "mixed"
   }
 ]

@@ -20,7 +20,7 @@ struct VoiceInputApp: App {
         coordinator.openWindow = { [weak self] window in self?.windows.open(window) }
         coordinator.start()
         if coordinator.needsPermissions { windows.open(.permissions) }
-        if !coordinator.hasAPIKey { windows.open(.settings) }
+        if coordinator.needsSetup { windows.open(.settings) }
     }
 }
 

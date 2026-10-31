@@ -4,6 +4,11 @@ public enum InsertionMode: String, Codable, Sendable {
     case batch, realtime
 }
 
+/// 文字起こしに使うエンジン。
+public enum TranscriptionEngine: String, Codable, Sendable {
+    case soniox, local
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
     public var toggleKey: KeyID
     public var holdKey: KeyID
@@ -19,6 +24,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var useCloudLocator: Bool
     /// OpenAI のモデル名（例 "gpt-6-luna"）。コードには持たず、設定ファイルに書かれた値だけを使う。空なら OpenAI を使わない。
     public var cloudModel: String
+    /// 文字起こしエンジン。ローカルのときは音声もテキストも外へ送らない。
+    public var engine: TranscriptionEngine
+
+    /// クラウド（Soniox / OpenAI）へ送ってよいか。
+    public var allowsCloud: Bool { engine == .soniox }
 
     public static let `default` = AppSettings(
         toggleKey: .rightOption,
@@ -32,7 +42,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         launchAtLogin: false,
         glossaryShortcut: .glossaryDefault,
         useCloudLocator: false,
-        cloudModel: ""
+        cloudModel: "",
+        engine: .soniox
     )
 
     public init(
@@ -47,7 +58,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         launchAtLogin: Bool = false,
         glossaryShortcut: Shortcut = .glossaryDefault,
         useCloudLocator: Bool = false,
-        cloudModel: String = ""
+        cloudModel: String = "",
+        engine: TranscriptionEngine = .soniox
     ) {
         self.toggleKey = toggleKey
         self.holdKey = holdKey
@@ -61,6 +73,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.glossaryShortcut = glossaryShortcut
         self.useCloudLocator = useCloudLocator
         self.cloudModel = cloudModel
+        self.engine = engine
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,5 +91,6 @@ public struct AppSettings: Codable, Equatable, Sendable {
         glossaryShortcut = try c.decodeIfPresent(Shortcut.self, forKey: .glossaryShortcut) ?? d.glossaryShortcut
         useCloudLocator = try c.decodeIfPresent(Bool.self, forKey: .useCloudLocator) ?? d.useCloudLocator
         cloudModel = try c.decodeIfPresent(String.self, forKey: .cloudModel) ?? d.cloudModel
+        engine = try c.decodeIfPresent(TranscriptionEngine.self, forKey: .engine) ?? d.engine
     }
 }

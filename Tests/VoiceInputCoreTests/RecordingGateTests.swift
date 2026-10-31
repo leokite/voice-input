@@ -72,4 +72,35 @@ import Testing
         g.sessionStateChanged(.error("ネットワークに接続できません"))
         #expect(g.isQuiet)
     }
+
+    @Test func modelNotReadyRejectsOnConfirm() {
+        var g = RecordingGate()
+        let begin = g.decide(.beginBuffering, hasAPIKey: true, secureInput: false, localModelReady: false)
+        #expect(begin.forward == nil)
+        let confirm = g.decide(.confirm(.toggle), hasAPIKey: true, secureInput: false, localModelReady: false)
+        #expect(confirm.rejection == .localModelNotReady)
+        #expect(confirm.forward == nil)
+        #expect(g.isQuiet)
+    }
+
+    @Test func modelNotReadyCancelIsQuiet() {
+        var g = RecordingGate()
+        _ = g.decide(.beginBuffering, hasAPIKey: true, secureInput: false, localModelReady: false)
+        let cancel = g.decide(.cancel, hasAPIKey: true, secureInput: false, localModelReady: false)
+        #expect(cancel.rejection == nil)
+        #expect(g.isQuiet)
+    }
+
+    @Test func recordsWithoutAPIKeyWhenCallerPassesTrue() {
+        var g = RecordingGate()
+        let begin = g.decide(.beginBuffering, hasAPIKey: true, secureInput: false, localModelReady: true)
+        #expect(begin.forward == .beginBuffering)
+    }
+
+    @Test func missingAPIKeyTakesPrecedenceOverModelNotReady() {
+        var g = RecordingGate()
+        _ = g.decide(.beginBuffering, hasAPIKey: false, secureInput: false, localModelReady: false)
+        let confirm = g.decide(.confirm(.toggle), hasAPIKey: false, secureInput: false, localModelReady: false)
+        #expect(confirm.rejection == .missingAPIKey)
+    }
 }

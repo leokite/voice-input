@@ -91,6 +91,7 @@ final class FakeAudio: AudioSource {
     private let continuation: AsyncThrowingStream<SonioxResponse, Error>.Continuation
     private let clock: TestClock
     var startDelay: Duration
+    nonisolated(unsafe) var finalizeTimeout: Duration = .seconds(5)
     /// 設定すると sendAudio がこのエラーを投げる（ソケットが閉じた後の送信を再現する）。
     var sendError: Error?
     private(set) var config: SonioxConfig?
@@ -188,4 +189,39 @@ extension SonioxResponse {
 
     static let fin = SonioxResponse(tokens: [SonioxToken(text: "<fin>", isFinal: true)],
                                     finished: false, errorCode: nil, errorMessage: nil)
+}
+
+/// 呼ばれた引数を残し、設定した結果を返す。
+final class FakeLocalTranscriber: LocalTranscriber, @unchecked Sendable {
+    struct Call: Equatable {
+        let pcm: Data
+        let hints: [String]
+        let terms: [String]
+    }
+
+    private let lock = NSLock()
+    private var _result: Result<String, Error> = .success("")
+    private var _calls: [Call] = []
+
+    var result: Result<String, Error> {
+        get { lock.withLock { _result } }
+        set { lock.withLock { _result = newValue } }
+    }
+
+    var calls: [Call] { lock.withLock { _calls } }
+
+    func transcribe(pcm: Data, languageHints: [String], terms: [String]) async throws -> String {
+        lock.withLock { _calls.append(Call(pcm: pcm, hints: languageHints, terms: terms)) }
+        return try result.get()
+    }
+}
+
+/// 振幅 8000 の 1600 サンプル（0.1 秒）。
+func loudPCM() -> Data {
+    [Int16](repeating: 8000, count: 1600).withUnsafeBytes { Data($0) }
+}
+
+/// 0 の 1600 サンプル（0.1 秒）。
+func silentPCM() -> Data {
+    [Int16](repeating: 0, count: 1600).withUnsafeBytes { Data($0) }
 }
