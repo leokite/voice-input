@@ -10,7 +10,10 @@ let package = Package(
         .executable(name: "voice-eval", targets: ["voice-eval"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "1.1.1"),
+        // 通信しないことは 1.1.1 の中身（トークナイザーの探し方と取得への切り替え、download と modelFolder の扱い、
+        // 保存の形、detectLangauge）に頼っている。上げるときは、取得に行く道がないかを確かめ直す。
+        // Xcode のビルドは Package.resolved を見ないので、版を固定する。
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "1.1.1"),
     ],
     targets: [
         .target(name: "VoiceInputCore"),
