@@ -26,7 +26,10 @@ public enum LocalModelLayout {
         base.appendingPathComponent("models/openai/whisper-large-v3", isDirectory: true)
     }
 
-    private static let requiredModels = ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc"]
+    private static let requiredModels = [
+        "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc",
+        "TextDecoderContextPrefill.mlmodelc",
+    ]
     // 完成したコンパイル済みモデルが必ず持つファイル（実際のダウンロードで確認）
     private static let requiredModelContents = ["coremldata.bin", "weights/weight.bin"]
     private static let requiredModelFiles = ["config.json"]

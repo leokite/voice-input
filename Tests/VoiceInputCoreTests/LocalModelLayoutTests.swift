@@ -22,7 +22,10 @@ import Testing
 
     private func installModel(base: URL, skipping skipped: String? = nil) throws {
         let folder = LocalModelLayout.modelFolder(base: base)
-        for name in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc"]
+        for name in [
+            "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc",
+            "TextDecoderContextPrefill.mlmodelc",
+        ]
         where name != skipped {
             let dir = folder.appendingPathComponent(name)
             try touch(dir.appendingPathComponent("coremldata.bin"), directory: false)
@@ -125,6 +128,16 @@ import Testing
         let dir = LocalModelLayout.modelFolder(base: base).appendingPathComponent("MelSpectrogram.mlmodelc")
         try FileManager.default.removeItem(at: dir)
         try Data("x".utf8).write(to: dir)
+        #expect(!LocalModelLayout.isInstalled(base: base))
+    }
+
+    @Test func contextPrefillMissingWeightsIsNotInstalled() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        let weights = LocalModelLayout.modelFolder(base: base)
+            .appendingPathComponent("TextDecoderContextPrefill.mlmodelc/weights/weight.bin")
+        try FileManager.default.removeItem(at: weights)
         #expect(!LocalModelLayout.isInstalled(base: base))
     }
 }
