@@ -24,7 +24,9 @@ import Testing
         let folder = LocalModelLayout.modelFolder(base: base)
         for name in ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc"]
         where name != skipped {
-            try touch(folder.appendingPathComponent(name), directory: true)
+            let dir = folder.appendingPathComponent(name)
+            try touch(dir.appendingPathComponent("coremldata.bin"), directory: false)
+            try touch(dir.appendingPathComponent("weights/weight.bin"), directory: false)
         }
         try touch(folder.appendingPathComponent("config.json"), directory: false)
     }
@@ -33,6 +35,11 @@ import Testing
         try touch(
             LocalModelLayout.tokenizerFolder(base: base).appendingPathComponent("tokenizer.json"),
             directory: false)
+    }
+
+    private func complete(_ base: URL) throws {
+        try installModel(base: base)
+        try installTokenizer(base: base)
     }
 
     @Test func pathsMatchLayout() {
@@ -72,5 +79,52 @@ import Testing
         try installModel(base: base)
         try installTokenizer(base: base)
         #expect(LocalModelLayout.isInstalled(base: base))
+    }
+
+    @Test func emptyMlmodelcDirectoryIsNotInstalled() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        let dir = LocalModelLayout.modelFolder(base: base).appendingPathComponent("TextDecoder.mlmodelc")
+        try FileManager.default.removeItem(at: dir)
+        try touch(dir, directory: true)
+        #expect(!LocalModelLayout.isInstalled(base: base))
+    }
+
+    @Test func mlmodelcMissingWeightsIsNotInstalled() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        let weights = LocalModelLayout.modelFolder(base: base)
+            .appendingPathComponent("AudioEncoder.mlmodelc/weights/weight.bin")
+        try FileManager.default.removeItem(at: weights)
+        #expect(!LocalModelLayout.isInstalled(base: base))
+    }
+
+    @Test func zeroByteTokenizerIsNotInstalled() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        let file = LocalModelLayout.tokenizerFolder(base: base).appendingPathComponent("tokenizer.json")
+        try Data().write(to: file)
+        #expect(!LocalModelLayout.isInstalled(base: base))
+    }
+
+    @Test func zeroByteConfigIsNotInstalled() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        try Data().write(to: LocalModelLayout.modelFolder(base: base).appendingPathComponent("config.json"))
+        #expect(!LocalModelLayout.isInstalled(base: base))
+    }
+
+    @Test func fileWhereDirectoryExpectedIsNotInstalled() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        let dir = LocalModelLayout.modelFolder(base: base).appendingPathComponent("MelSpectrogram.mlmodelc")
+        try FileManager.default.removeItem(at: dir)
+        try Data("x".utf8).write(to: dir)
+        #expect(!LocalModelLayout.isInstalled(base: base))
     }
 }

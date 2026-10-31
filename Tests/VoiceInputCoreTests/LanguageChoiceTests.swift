@@ -21,4 +21,9 @@ import Testing
     @Test func noProbabilitiesFallsBackToFirstHint() {
         #expect(LanguageChoice.pick(hints: ["ja", "en"], probabilities: [:]) == "ja")
     }
+
+    @Test func nanProbabilityNeverWins() {
+        #expect(LanguageChoice.pick(hints: ["ja", "en"], probabilities: ["ja": .nan, "en": -3.0]) == "en")
+        #expect(LanguageChoice.pick(hints: ["ja", "en"], probabilities: ["ja": -3.0, "en": .nan]) == "ja")
+    }
 }

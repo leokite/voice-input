@@ -26,17 +26,37 @@ public enum LocalModelLayout {
         base.appendingPathComponent("models/openai/whisper-large-v3", isDirectory: true)
     }
 
-    private static let requiredModelItems = [
-        "AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc", "config.json",
-    ]
-    private static let requiredTokenizerItems = ["tokenizer.json"]
+    private static let requiredModels = ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc", "MelSpectrogram.mlmodelc"]
+    // 完成したコンパイル済みモデルが必ず持つファイル（実際のダウンロードで確認）
+    private static let requiredModelContents = ["coremldata.bin", "weights/weight.bin"]
+    private static let requiredModelFiles = ["config.json"]
+    private static let requiredTokenizerFiles = ["tokenizer.json"]
 
-    /// モデルとトークナイザーの両方がそろっているときだけ true（途中までの取得は未導入扱い）
+    /// モデルとトークナイザーの両方が中身までそろっているときだけ true（途中までの取得は未導入扱い）
     public static func isInstalled(base: URL) -> Bool {
-        let fm = FileManager.default
         let model = modelFolder(base: base)
         let tokenizer = tokenizerFolder(base: base)
-        return requiredModelItems.allSatisfy { fm.fileExists(atPath: model.appendingPathComponent($0).path) }
-            && requiredTokenizerItems.allSatisfy { fm.fileExists(atPath: tokenizer.appendingPathComponent($0).path) }
+        for name in requiredModels {
+            let dir = model.appendingPathComponent(name, isDirectory: true)
+            guard isDirectory(dir) else { return false }
+            for item in requiredModelContents where !isNonEmptyFile(dir.appendingPathComponent(item)) {
+                return false
+            }
+        }
+        return requiredModelFiles.allSatisfy { isNonEmptyFile(model.appendingPathComponent($0)) }
+            && requiredTokenizerFiles.allSatisfy { isNonEmptyFile(tokenizer.appendingPathComponent($0)) }
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    private static func isNonEmptyFile(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue,
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
+        else { return false }
+        return size.intValue > 0
     }
 }
