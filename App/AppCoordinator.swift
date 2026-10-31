@@ -2,7 +2,9 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 import Carbon.HIToolbox
+import Combine
 import VoiceInputCore
+import VoiceInputLocal
 
 /// 保存処理、SessionController、KeyStateMachine、GlobalKeyMonitor、OverlayPanel をつなぐ。
 @MainActor final class AppCoordinator: ObservableObject {
@@ -18,6 +20,12 @@ import VoiceInputCore
     @Published private(set) var hasOpenAIKey = false
     /// 端末内AIを使えるか。使えないときは置き換えを登録せず、認識のヒントだけを登録する。
     @Published private(set) var judgeAvailability: JudgeAvailability
+    /// ローカルモデルの状態（models.status の写し。設定画面はこれを見る）。
+    @Published private(set) var modelStatus: LocalModelStatus
+    /// 裏でローカルモデルを読み込んでいる。その間は削除しない。
+    @Published private(set) var warmingUp = false
+    /// 今モデルを消してよいか。録音の音量のたびに画面を描き直さないよう、変わったときだけ更新する。
+    @Published private(set) var canDeleteModel = false
     /// 案内の画面を開く。AppDelegate が WindowPresenter につなぐ。
     var openWindow: ((AppWindow) -> Void)?
 
@@ -32,6 +40,12 @@ import VoiceInputCore
     private var session: SessionController!
     private var keyMonitor: GlobalKeyMonitor!
     private let overlay = OverlayPanel()
+    private let models = LocalModelManager(
+        base: LocalModelLayout.downloadBase(supportDirectory: AppPaths.supportDirectory))
+    private var warmUpTask: Task<Void, Never>?
+    /// クラウドの API キーの有無を確かめた。ローカルの間はキーチェーンを読まないので、Soniox に切り替えたときに確かめる。
+    private var cloudKeysChecked = false
+    private var modelStatusSink: AnyCancellable?
 
     private var sessionState: SessionState = .idle
     private var thresholdTask: Task<Void, Never>?
@@ -59,18 +73,22 @@ import VoiceInputCore
         let settings = settingsStore.load()
         self.settings = settings
         glossary = glossaryStore.load()
-        hasAPIKey = !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
-        hasOpenAIKey = !(KeychainStore.loadAPIKey(account: KeychainStore.openAIAccount)?.isEmpty ?? true)
         history = historyStore.load()
         watchedKeys = LockedValue([settings.toggleKey, settings.holdKey])
         glossaryShortcut = LockedValue(settings.glossaryShortcut)
         (judge, judgeAvailability) = OnDeviceJudge.make()
+        modelStatus = models.status
         keyMachine = KeyStateMachine(toggleKey: settings.toggleKey, holdKey: settings.holdKey,
                                      holdThreshold: settings.holdThreshold)
 
         session = SessionController(
             audio: AudioCapture(),
-            sessions: KeychainSessionFactory(),
+            // SessionController はメインで makeSession() を呼ぶので、設定はメインのものをそのまま読む。
+            sessions: EngineSessionFactory(
+                settings: { [unowned self] in MainActor.assumeIsolated { self.settings } },
+                soniox: { KeychainSessionFactory().makeSession() },
+                local: { [transcriber = models.transcriber] in LocalTranscriptionSession(transcriber: transcriber) }
+            ),
             inserter: inserter,
             frontmost: FrontmostApp(),
             settings: { [unowned self] in self.settings },
@@ -81,6 +99,11 @@ import VoiceInputCore
         session.onStateChange = { [unowned self] state in self.sessionStateChanged(state) }
         session.onAutoStop = { [unowned self] in self.keyMachine.reset() }
         session.onError = { [unowned self] error in self.guide(for: error) }
+        modelStatusSink = models.$status.sink { [weak self] status in
+            self?.modelStatus = status
+            self?.updateCanDeleteModel()
+        }
+        if settings.allowsCloud { checkCloudKeys() }
 
         // コールバックは tap の専用スレッドで呼ばれる。時刻はその場で取り、処理はメインへ順番どおりに移す。
         keyMonitor = GlobalKeyMonitor(
@@ -106,6 +129,8 @@ import VoiceInputCore
     }
 
     func start() {
+        models.refresh()
+        warmUpModelIfNeeded()
         keyMonitorRunning = keyMonitor.start()
         if !keyMonitorRunning { retryKeyMonitorUntilPermitted() }
         watchAccessibilityRevocation()
@@ -159,10 +184,22 @@ import VoiceInputCore
 
     func updateSettings(_ new: AppSettings) {
         guard new != settings else { return }
+        let engineChanged = new.engine != settings.engine
         settings = new
         do { try settingsStore.save(new) } catch { NSLog("VoiceInput: settings.json を保存できません: \(error)") }
+        if engineChanged {
+            if new.allowsCloud, !cloudKeysChecked { checkCloudKeys() }
+            warmUpModelIfNeeded()
+        }
         keyRebuildPending = true
         rebuildKeysIfQuiet()
+    }
+
+    /// キーチェーンにキーがあるかを見る。画面から繰り返し読まないよう、起動時か Soniox に切り替えたときに 1 回だけ。
+    private func checkCloudKeys() {
+        hasAPIKey = !(KeychainStore.loadAPIKey()?.isEmpty ?? true)
+        hasOpenAIKey = !(KeychainStore.loadAPIKey(account: KeychainStore.openAIAccount)?.isEmpty ?? true)
+        cloudKeysChecked = true
     }
 
     func saveAPIKey(_ key: String) throws {
@@ -186,10 +223,54 @@ import VoiceInputCore
     }
 
     /// 設定でオンにしていて、キーとモデル名（設定ファイルの cloudModel）があれば、置き換え元を OpenAI に探してもらう。
+    /// ローカルのときは使わない（キーチェーンも読まない）。
     private func makeLocator() -> OpenAISourceLocator? {
-        guard settings.useCloudLocator, hasOpenAIKey,
+        guard LocalModeRules.usesCloudLocator(settings: settings, hasOpenAIKey: hasOpenAIKey),
               let key = KeychainStore.loadAPIKey(account: KeychainStore.openAIAccount) else { return nil }
         return OpenAISourceLocator.make(apiKey: key, model: settings.cloudModel)
+    }
+
+    // MARK: - Local model
+
+    /// 録音や処理、押下の途中、裏での読み込みの間は消さない（使っている最中にファイルを消さないため）。
+    private var deletionAllowed: Bool {
+        LocalModeRules.canDeleteModel(status: modelStatus, sessionState: sessionState, keysQuiet: gate.isQuiet,
+                                      warmingUp: warmingUp)
+    }
+
+    private func updateCanDeleteModel() {
+        if canDeleteModel != deletionAllowed { canDeleteModel = deletionAllowed }
+    }
+
+    func refreshModelStatus() {
+        models.refresh()
+    }
+
+    /// 通信するのはこの操作だけ。
+    func downloadModel() {
+        Task { await models.download() }
+    }
+
+    func deleteModel() throws {
+        guard deletionAllowed else { throw LocalTranscriptionError(message: "使っている間は削除できません") }
+        try models.delete()
+    }
+
+    /// ローカルを選んでいてモデルが使えるなら、裏で 1 秒の無音を認識させて読み込んでおく。
+    /// アプリや OS の更新の後は Core ML のコンパイルで長くかかるので、最初の録音で待たせないため。
+    private func warmUpModelIfNeeded() {
+        guard warmUpTask == nil, LocalModeRules.shouldWarmUp(engine: settings.engine, status: models.status)
+        else { return }
+        warmingUp = true
+        updateCanDeleteModel()
+        let transcriber = models.transcriber
+        warmUpTask = Task { [weak self] in
+            // 言語の判定を省くため、日本語と決めて認識する。失敗は録音のときに知らせる。
+            _ = try? await transcriber.transcribe(pcm: Data(count: 32000), languageHints: ["ja"], terms: [])
+            self?.warmingUp = false
+            self?.warmUpTask = nil
+            self?.updateCanDeleteModel()
+        }
     }
 
     func updateGlossary(_ new: Glossary) {
@@ -235,6 +316,7 @@ import VoiceInputCore
         if gate.buffering { session.handle(.cancel) }
         gate.reset()
         keyMachine.reset()
+        updateCanDeleteModel()
     }
 
     // MARK: - Keys
@@ -270,16 +352,20 @@ import VoiceInputCore
         if gate.buffering { session.handle(.cancel) }
         gate.reset()
         keyMachine.reset()
+        updateCanDeleteModel()
     }
 
     /// 押した時点ではキーチェーンを読まない（確認のダイアログが普段の入力中に出ないよう、保存の有無だけを見る）。
-    /// キーそのものは確定したときに KeychainSessionFactory が読む。
+    /// キーそのものは確定したときに KeychainSessionFactory が読む。ローカルのときはキーを見ず、モデルの状態を見る。
     private func dispatch(_ actions: [KeyAction]) {
         for action in actions {
             if action == .beginBuffering { scheduleThresholdTick() }
             var secureInput = false
             if case .confirm = action { secureInput = IsSecureEventInputEnabled() }
-            let decision = gate.decide(action, hasAPIKey: hasAPIKey, secureInput: secureInput)
+            let inputs = LocalModeRules.gateInputs(engine: settings.engine, hasAPIKey: hasAPIKey,
+                                                   modelStatus: models.status)
+            let decision = gate.decide(action, hasAPIKey: inputs.hasAPIKey, secureInput: secureInput,
+                                       localModelReady: inputs.localModelReady)
             if let forward = decision.forward, !session.handle(forward),
                let rejection = gate.sessionRejected(forward) {
                 reject(rejection)
@@ -291,6 +377,7 @@ import VoiceInputCore
             }
         }
         rebuildKeysIfQuiet()
+        updateCanDeleteModel()
     }
 
     /// 録音を始めない。キーの状態を戻し、理由を短く知らせる。
@@ -300,6 +387,9 @@ import VoiceInputCore
         switch rejection {
         case .missingAPIKey:
             showOverlayMessage(.error("API キーが設定されていません"))
+            openWindow?(.settings)
+        case .localModelNotReady:
+            showOverlayMessage(.error("ローカルのモデルが使えません"))
             openWindow?(.settings)
         case .secureInput:
             showOverlayMessage(.notice("パスワード入力中は使えません"))
@@ -385,6 +475,7 @@ import VoiceInputCore
         overlay.show(state)
         if case .error = state { keyMachine.reset() }
         rebuildKeysIfQuiet()
+        updateCanDeleteModel()
     }
 
     /// エラーが出たら、直し方の分かる場所を開く。SessionController はエラー 1 回につき 1 回だけ呼ぶ。
