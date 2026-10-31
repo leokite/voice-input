@@ -113,31 +113,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section("フィラー") {
-                ForEach(coordinator.settings.fillers.indices, id: \.self) { i in
-                    HStack {
-                        Text(coordinator.settings.fillers[i])
-                        Spacer()
-                        Button(role: .destructive) {
-                            var s = coordinator.settings
-                            s.fillers.remove(at: i)
-                            coordinator.updateSettings(s)
-                        } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless)
-                    }
-                }
-                HStack {
-                    TextField("追加するフィラー", text: $newFiller).onSubmit(addFiller)
-                    Button("追加", action: addFiller)
-                        .disabled(newFiller.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-                Button("初期値に戻す") {
-                    var s = coordinator.settings
-                    s.fillers = FillerRemover.defaultFillers
-                    coordinator.updateSettings(s)
-                }
-            }
-
             Section("用語集") {
                 if isLocal {
                     Text("用語は音声認識のヒントとして使います（ローカルでは長さに上限があります）")
@@ -200,6 +175,31 @@ struct SettingsView: View {
             Section("起動") {
                 Toggle("ログイン時に起動", isOn: launchBinding)
                 if let launchError { Text(launchError).foregroundStyle(.red) }
+            }
+
+            Section("フィラー") {
+                ForEach(coordinator.settings.fillers.indices, id: \.self) { i in
+                    HStack {
+                        Text(coordinator.settings.fillers[i])
+                        Spacer()
+                        Button(role: .destructive) {
+                            var s = coordinator.settings
+                            s.fillers.remove(at: i)
+                            coordinator.updateSettings(s)
+                        } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                HStack {
+                    TextField("追加するフィラー", text: $newFiller).onSubmit(addFiller)
+                    Button("追加", action: addFiller)
+                        .disabled(newFiller.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                Button("初期値に戻す") {
+                    var s = coordinator.settings
+                    s.fillers = FillerRemover.defaultFillers
+                    coordinator.updateSettings(s)
+                }
             }
         }
         .formStyle(.grouped)
