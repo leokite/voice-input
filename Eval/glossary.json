@@ -1,0 +1,59 @@
+{
+  "replacements": [],
+  "terms": [
+    {
+      "text": "GitHub"
+    },
+    {
+      "text": "Slack"
+    },
+    {
+      "text": "meeting"
+    },
+    {
+      "text": "bug"
+    },
+    {
+      "text": "release"
+    },
+    {
+      "text": "Google Calendar"
+    },
+    {
+      "text": "Swift"
+    },
+    {
+      "text": "async await"
+    },
+    {
+      "text": "Docker"
+    },
+    {
+      "text": "API"
+    },
+    {
+      "text": "TypeScript"
+    },
+    {
+      "text": "Kubernetes"
+    },
+    {
+      "text": "main"
+    },
+    {
+      "text": "CI"
+    },
+    {
+      "text": "ブランチ"
+    },
+    {
+      "text": "コミット"
+    },
+    {
+      "text": "プルリクエスト"
+    },
+    {
+      "text": "デプロイ"
+    }
+  ]
+}

@@ -12,6 +12,15 @@ SONIOX_API_KEY=... swift run voice-eval Eval [--no-glossary]
 `SONIOX_API_KEY` がなければキーチェーンのキーを使う。用語集は `~/Library/Application Support/VoiceInput/glossary.json`、
 フィラーは同じ場所の `settings.json` から読む。
 
+ローカル（WhisperKit）で測るときは API キーは要らない。モデルは `~/Library/Application Support/VoiceInput/Models` から読む。
+`--install-local` を付けると、未導入なら先にダウンロードする（約 1.5GB。通信はこのときだけ）。
+
+```
+swift run voice-eval Eval --engine local [--install-local] [--glossary Eval/glossary.json]
+```
+
+`Eval/glossary.json` は試作で使った 18 語の用語集。
+
 ## 仮音声の再生成
 
 `say` による合成音声（日本語は Kyoko、英語は Samantha）。
