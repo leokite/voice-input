@@ -26,4 +26,15 @@ import Testing
         #expect(LanguageChoice.pick(hints: ["ja", "en"], probabilities: ["ja": .nan, "en": -3.0]) == "en")
         #expect(LanguageChoice.pick(hints: ["ja", "en"], probabilities: ["ja": -3.0, "en": .nan]) == "ja")
     }
+
+    @Test func regionalHintsAreReducedToLanguageCodes() {
+        #expect(LanguageChoice.normalized(["ja-JP", "EN_us", "ja", " zh "]) == ["ja", "en", "zh"])
+        #expect(LanguageChoice.normalized(["", "-"]) == [])
+    }
+
+    @Test func regionalHintsMatchDetectedLanguages() {
+        #expect(LanguageChoice.pick(hints: ["ja-JP", "en-US"], probabilities: ["en": -0.1, "ja": -2.0]) == "en")
+        #expect(LanguageChoice.pick(hints: ["ja-JP"], probabilities: [:]) == "ja")
+        #expect(LanguageChoice.pick(hints: ["ja-JP", "en-US"], probabilities: [:]) == "ja")
+    }
 }
