@@ -19,11 +19,15 @@ public final class WhisperKitTranscriber: LocalTranscriber, Sendable {
     }
 
     /// 導入の仕上げ。トークナイザーが無ければ WhisperKit が取得するので、ダウンロードの操作からだけ呼ぶ。
-    /// 短い無音を一度認識して、Core ML のコンパイルを済ませる。
+    /// 前に読み込んだモデルを捨て、新しいファイルから読み込んで短い無音を認識する（Core ML のコンパイルを済ませる）。
     func prepareAfterDownload() async throws {
         do {
+            await engine.unload()
             try await engine.load(allowTokenizerFetch: true)
             _ = try await engine.transcribe(samples: [Float](repeating: 0, count: 16000), languageHints: ["ja"], terms: [])
+        } catch is CancellationError {
+            // 取り消しは呼び出し側（ダウンロード）の言葉で伝える
+            throw CancellationError()
         } catch {
             throw Self.wrap(error)
         }
@@ -41,6 +45,17 @@ public final class WhisperKitTranscriber: LocalTranscriber, Sendable {
         }
     }
 
+    /// 言語が決まっていなければ Whisper に判定させる（prefill の既定は英語なので、明示しないと英語になる）
+    static func decodingOptions(language: String?, promptTokens: [Int]) -> DecodingOptions {
+        var options = DecodingOptions(
+            task: .transcribe, language: language, temperature: 0, usePrefillPrompt: true,
+            detectLanguage: language == nil, skipSpecialTokens: true)
+        if !promptTokens.isEmpty {
+            options.promptTokens = promptTokens
+        }
+        return options
+    }
+
     static func wrap(_ error: Error) -> LocalTranscriptionError {
         if let error = error as? LocalTranscriptionError { return error }
         if error is CancellationError { return LocalTranscriptionError(message: "認識を取り消しました") }
@@ -48,20 +63,27 @@ public final class WhisperKitTranscriber: LocalTranscriber, Sendable {
     }
 }
 
-/// WhisperKit 本体を持ち、読み込みと認識を一か所で順に扱う
+/// WhisperKit 本体を持つ。読み込みは同時に 1 つだけ走らせ、重なった呼び出しはその結果を待つ。
 actor WhisperKitEngine {
     private let base: URL
     private var kit: WhisperKit?
+    private var loading: Task<Void, Error>?
 
     init(base: URL) {
         self.base = base
     }
 
     func load(allowTokenizerFetch: Bool) async throws {
-        guard kit == nil else { return }
-        // 通常の利用では、ファイルがそろっていないときに読み込まない（WhisperKit はトークナイザーが無いと取得しに行くため）
-        guard allowTokenizerFetch || LocalModelLayout.isInstalled(base: base) else {
-            throw LocalTranscriptionError(message: "ローカルのモデルが導入されていません")
+        if kit != nil { return }
+        if let loading {
+            try await loading.value
+            return
+        }
+        // 通常の利用では、ファイルがそろって読めるときだけ読み込む（WhisperKit はトークナイザーを読めないと取得しに行くため）
+        guard allowTokenizerFetch
+            || (LocalModelLayout.isInstalled(base: base) && LocalModelLayout.tokenizerFilesAreValid(base: base))
+        else {
+            throw LocalTranscriptionError(message: "ローカルのモデルが導入されていないか、壊れています")
         }
         let config = WhisperKitConfig(
             modelFolder: LocalModelLayout.modelFolder(base: base).path,
@@ -69,13 +91,18 @@ actor WhisperKitEngine {
             verbose: false,
             download: false
         )
-        let loaded = try await WhisperKit(config)
-        try Task.checkCancellation()
-        // 読み込みの途中で別の呼び出しが先に終えていれば、そちらを使う
-        if kit == nil { kit = loaded }
+        // 呼び出し側が取り消されても読み込みは最後まで続け、次の呼び出しで使う
+        let task = Task {
+            let loaded = try await WhisperKit(config)
+            self.kit = loaded
+        }
+        loading = task
+        defer { loading = nil }
+        try await task.value
     }
 
     func unload() async {
+        _ = try? await loading?.value
         await kit?.unloadModels()
         kit = nil
     }
@@ -95,13 +122,13 @@ actor WhisperKitEngine {
             language = languageHints.first
         }
 
-        var options = DecodingOptions(task: .transcribe, language: language, temperature: 0, skipSpecialTokens: true)
+        var promptTokens: [Int] = []
         let prompt = PromptTerms.build(from: terms)
         if !prompt.isEmpty, let tokenizer = kit.tokenizer {
-            options.promptTokens = tokenizer.encode(text: " " + prompt)
+            promptTokens = tokenizer.encode(text: " " + prompt)
                 .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
-            options.usePrefillPrompt = true
         }
+        let options = WhisperKitTranscriber.decodingOptions(language: language, promptTokens: promptTokens)
 
         let results = try await kit.transcribe(audioArray: samples, decodeOptions: options)
         try Task.checkCancellation()

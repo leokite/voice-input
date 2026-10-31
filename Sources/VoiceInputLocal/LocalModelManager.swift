@@ -71,8 +71,8 @@ public final class LocalModelManager: ObservableObject {
     }
 
     private static func reason(_ error: Error) -> String {
+        if error is CancellationError || Task.isCancelled { return "ダウンロードを取り消しました" }
         if let error = error as? LocalTranscriptionError { return error.message }
-        if error is CancellationError { return "ダウンロードを取り消しました" }
         return error.localizedDescription
     }
 }

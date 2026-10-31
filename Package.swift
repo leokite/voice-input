@@ -25,5 +25,7 @@ let package = Package(
             dependencies: ["VoiceInputCore"],
             resources: [.copy("Fixtures")]
         ),
+        // モデルを使わずに確かめられる部分だけを試す
+        .testTarget(name: "VoiceInputLocalTests", dependencies: ["VoiceInputLocal"]),
     ]
 )

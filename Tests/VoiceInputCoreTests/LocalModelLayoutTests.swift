@@ -35,9 +35,11 @@ import Testing
     }
 
     private func installTokenizer(base: URL) throws {
-        try touch(
-            LocalModelLayout.tokenizerFolder(base: base).appendingPathComponent("tokenizer.json"),
-            directory: false)
+        let folder = LocalModelLayout.tokenizerFolder(base: base)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for name in ["tokenizer.json", "tokenizer_config.json"] {
+            try Data(#"{"version":"1.0"}"#.utf8).write(to: folder.appendingPathComponent(name))
+        }
     }
 
     private func complete(_ base: URL) throws {
@@ -139,5 +141,55 @@ import Testing
             .appendingPathComponent("TextDecoderContextPrefill.mlmodelc/weights/weight.bin")
         try FileManager.default.removeItem(at: weights)
         #expect(!LocalModelLayout.isInstalled(base: base))
+    }
+
+    @Test func missingTokenizerConfigIsNotInstalled() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        try FileManager.default.removeItem(
+            at: LocalModelLayout.tokenizerFolder(base: base).appendingPathComponent("tokenizer_config.json"))
+        #expect(!LocalModelLayout.isInstalled(base: base))
+    }
+
+    @Test func validTokenizerFilesPass() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        #expect(LocalModelLayout.tokenizerFilesAreValid(base: base))
+    }
+
+    @Test(arguments: ["tokenizer.json", "tokenizer_config.json"])
+    func truncatedTokenizerFileIsInvalid(name: String) throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        let file = LocalModelLayout.tokenizerFolder(base: base).appendingPathComponent(name)
+        try Data(#"{"version":"1."#.utf8).write(to: file)
+        #expect(!LocalModelLayout.tokenizerFilesAreValid(base: base))
+    }
+
+    @Test func emptyTokenizerFileIsInvalid() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        try Data().write(to: LocalModelLayout.tokenizerFolder(base: base).appendingPathComponent("tokenizer.json"))
+        #expect(!LocalModelLayout.tokenizerFilesAreValid(base: base))
+    }
+
+    @Test func nonObjectTokenizerFileIsInvalid() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try complete(base)
+        try Data("[1, 2]".utf8)
+            .write(to: LocalModelLayout.tokenizerFolder(base: base).appendingPathComponent("tokenizer_config.json"))
+        #expect(!LocalModelLayout.tokenizerFilesAreValid(base: base))
+    }
+
+    @Test func missingTokenizerIsInvalid() throws {
+        let base = try makeBase()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try installModel(base: base)
+        #expect(!LocalModelLayout.tokenizerFilesAreValid(base: base))
     }
 }

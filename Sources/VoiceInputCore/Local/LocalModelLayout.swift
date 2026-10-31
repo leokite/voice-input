@@ -33,7 +33,8 @@ public enum LocalModelLayout {
     // 完成したコンパイル済みモデルが必ず持つファイル（実際のダウンロードで確認）
     private static let requiredModelContents = ["coremldata.bin", "weights/weight.bin"]
     private static let requiredModelFiles = ["config.json"]
-    private static let requiredTokenizerFiles = ["tokenizer.json"]
+    // tokenizer_config.json が無いと WhisperKit はトークナイザーを取得しに行くので、両方を必須にする
+    private static let requiredTokenizerFiles = ["tokenizer.json", "tokenizer_config.json"]
 
     /// モデルとトークナイザーの両方が中身までそろっているときだけ true（途中までの取得は未導入扱い）
     public static func isInstalled(base: URL) -> Bool {
@@ -48,6 +49,17 @@ public enum LocalModelLayout {
         }
         return requiredModelFiles.allSatisfy { isNonEmptyFile(model.appendingPathComponent($0)) }
             && requiredTokenizerFiles.allSatisfy { isNonEmptyFile(tokenizer.appendingPathComponent($0)) }
+    }
+
+    /// トークナイザーのファイルが JSON のオブジェクトとして読めるときだけ true。
+    /// 読めないと WhisperKit は黙ってダウンロードに切り替えるため、通常の読み込みの前に確かめる。
+    public static func tokenizerFilesAreValid(base: URL) -> Bool {
+        requiredTokenizerFiles.allSatisfy { name in
+            guard let data = try? Data(contentsOf: tokenizerFolder(base: base).appendingPathComponent(name)),
+                  let object = try? JSONSerialization.jsonObject(with: data)
+            else { return false }
+            return object is [String: Any]
+        }
     }
 
     private static func isDirectory(_ url: URL) -> Bool {
