@@ -45,3 +45,23 @@ scripts/make-eval-audio.sh "<text>" Eval/001.pcm [voice]
 1. 16 kHz モノラルで文を録音する（例: QuickTime で録音して `afconvert -f WAVE -d LEI16@16000 -c 1 in.m4a out.wav`）。
 2. WAV のヘッダを除いた生 PCM にする（`scripts/make-eval-audio.sh` 内の perl と同じ要領で `data` チャンクだけを取り出す）。
 3. `Eval/NNN.pcm` を置き換える。`expected` を変えるなら `cases.json` も直す。
+
+## 「普通の言葉か」の判定精度（judge-eval）
+
+用語集への登録で使う、端末内AI（Foundation Models）の判定を測る。`judge-cases.json` は
+`[{"word":"どうか","common":true,"category":"common-ja"}]` の形式で、`common` が正解（普通の言葉なら true）。
+正解ラベルとカテゴリは作者の判断なので、自分の使う語に合わせて足したり直したりする。
+
+```
+swift run judge-eval [--cases Eval/judge-cases.json] [--runs 3]
+```
+
+Apple Intelligence がオンの macOS 26 以降の Mac でだけ動く。語ごとに `--runs` 回聞き、全体とカテゴリ別の正解率、
+間違いの向き、答えがぶれた語、応答時間を出す。普通の言葉を「普通でない」と答える間違いは、置き換えが誤って登録されるので、
+特に見る。
+
+指示文を調整するときは、調整用の `judge-cases.json` と、調整に使わない確認用の `judge-holdout.json` の両方で測る
+（調整用だけで測ると、その語だけに合う指示文になる）。差は 1〜2 点ほどぶれるので、`--runs 5` 以上で比べる。
+2026-11-03 の測定（この Mac、`--runs 5`）: 調整用 90.5%、確認用 80.6%。技術名のカタカナ（リアクト、パイソンなど）を
+「普通」と答えやすい。例を足して基準を書いた指示文も試したが、差は誤差の範囲で、普通の言葉を誤って「普通でない」と答える回数は
+増えたので採用しなかった。確認用の「ビュー」「ラスト」「スウィフト」は、普通の言葉としても使われるので、正解ラベルが微妙。

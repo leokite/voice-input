@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "VoiceInputCore", targets: ["VoiceInputCore"]),
         .library(name: "VoiceInputLocal", targets: ["VoiceInputLocal"]),
         .executable(name: "voice-eval", targets: ["voice-eval"]),
+        .executable(name: "judge-eval", targets: ["judge-eval"]),
     ],
     dependencies: [
         // 通信しないことは 1.1.1 の中身（トークナイザーの探し方と取得への切り替え、download と modelFolder の扱い、
@@ -23,6 +24,8 @@ let package = Package(
             dependencies: ["VoiceInputCore", .product(name: "WhisperKit", package: "WhisperKit")]
         ),
         .executableTarget(name: "voice-eval", dependencies: ["VoiceInputCore", "VoiceInputLocal"]),
+        // 端末内AIの「普通の言葉か」の判定精度を測る
+        .executableTarget(name: "judge-eval", dependencies: ["VoiceInputCore"]),
         .testTarget(
             name: "VoiceInputCoreTests",
             dependencies: ["VoiceInputCore"],
