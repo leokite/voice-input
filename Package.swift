@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "VoiceInputLocal", targets: ["VoiceInputLocal"]),
         .executable(name: "voice-eval", targets: ["voice-eval"]),
         .executable(name: "judge-eval", targets: ["judge-eval"]),
+        .executable(name: "source-eval", targets: ["source-eval"]),
     ],
     dependencies: [
         // 通信しないことは 1.1.1 の中身（トークナイザーの探し方と取得への切り替え、download と modelFolder の扱い、
@@ -26,6 +27,8 @@ let package = Package(
         .executableTarget(name: "voice-eval", dependencies: ["VoiceInputCore", "VoiceInputLocal"]),
         // 端末内AIの「普通の言葉か」の判定精度を測る
         .executableTarget(name: "judge-eval", dependencies: ["VoiceInputCore"]),
+        // 端末内AIで置き換え元を探す方式の精度を測る
+        .executableTarget(name: "source-eval", dependencies: ["VoiceInputCore"]),
         .testTarget(
             name: "VoiceInputCoreTests",
             dependencies: ["VoiceInputCore"],

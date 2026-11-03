@@ -65,3 +65,28 @@ Apple Intelligence がオンの macOS 26 以降の Mac でだけ動く。語ご�
 2026-11-03 の測定（この Mac、`--runs 5`）: 調整用 90.5%、確認用 80.6%。技術名のカタカナ（リアクト、パイソンなど）を
 「普通」と答えやすい。例を足して基準を書いた指示文も試したが、差は誤差の範囲で、普通の言葉を誤って「普通でない」と答える回数は
 増えたので採用しなかった。確認用の「ビュー」「ラスト」「スウィフト」は、普通の言葉としても使われるので、正解ラベルが微妙。
+
+## 置き換え元探しの方式（source-eval）
+
+オフラインで、OpenAI の代わりに端末内AIで置き換え元を探せるかを測る。`source-cases.json` は
+`[{"sentence":"…","word":"Docker","source":"どうか","set":"tuning"}]` の形式（`source` が null なら直しではない文、
+`set` は `tuning`（調整用）か `holdout`（確認用））。
+
+```
+swift run source-eval [--runs 3] [--set tuning|holdout] [--strategy free|choose|snapped|phonetic|hybrid|openai] [--verbose]
+```
+
+OpenAI と比べるときは `OPENAI_API_KEY` と `OPENAI_MODEL` を入れて `--strategy openai` を付ける。
+
+2026-11-03 の測定（この Mac、`--runs 3`、置き換え元がある文のうち、確認用 holdout のみ抜粋）:
+
+| 方式 | 内容 | 結果 |
+|---|---|---|
+| free | AI が文から自由に抜き出す | 断片や文全体を答えることが多く、正解率は 4 割台 |
+| choose | 読みの近い候補 6 個から AI が選ぶ | 候補に正解は 36/36 入るが、AI が選び損ねる（4〜5 割） |
+| snapped | free の答えを候補の区切りに直す | 5〜6 割。free より誤答が半分に |
+| phonetic | AI なし。読みがいちばん近い候補を答える | 確認用で誤答 0、見逃し 18/48（英語の読み: SQL、API、AWS など） |
+| hybrid | phonetic で見つからなければ snapped | 確認用で正解 69%、誤答 12/48（直しではない文 3 を含む）。調整用は 86% |
+
+候補は、ひらがな・カタカナ・英数字・漢字の切れ目で区切り、端の助詞と語尾（です・ます）を外したもの。
+AI に聞く前にこの候補と読みの近さで探す形が、いちばん安全で効く。
